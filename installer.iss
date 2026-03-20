@@ -7,7 +7,7 @@
 ;   3. Output goes to Output/LittleFishSetup.exe
 
 #define MyAppName "Little Fish"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "Luca & Leonardo"
 #define MyAppExeName "LittleFishLauncher.exe"
 

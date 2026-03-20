@@ -95,8 +95,20 @@ def _clean_stale_state():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION_PATH = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT)) / "version.json"
 GITHUB_REPO = "LucaTommy/LittleFish"
+
+# Read version from the install directory (writable, updatable), NOT from
+# _MEIPASS which is a temp copy baked into the exe at build-time.
+VERSION_PATH = PROJECT_ROOT / "version.json"
+
+# Fallback: if version.json doesn't exist on disk yet (first run after
+# install, or running from source), seed it from the bundled copy.
+_BUNDLED_VERSION = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT)) / "version.json"
+if not VERSION_PATH.exists() and _BUNDLED_VERSION.exists() and _BUNDLED_VERSION != VERSION_PATH:
+    try:
+        shutil.copy2(str(_BUNDLED_VERSION), str(VERSION_PATH))
+    except OSError:
+        pass
 
 
 def _read_version() -> dict:
@@ -899,7 +911,8 @@ class DashboardWindow(QWidget):
         update_btn_row.addWidget(self._skip_btn)
         self._rollback_btn = QPushButton("Rollback")
         self._rollback_btn.setToolTip("Restore previous version from backup")
-        self._rollback_btn.hide()
+        # Show rollback only when a backup exists
+        self._rollback_btn.setVisible((PROJECT_ROOT / "_backup").exists())
         self._rollback_btn.clicked.connect(self._on_rollback)
         update_btn_row.addWidget(self._rollback_btn)
         update_btn_row.addStretch()
@@ -1359,17 +1372,22 @@ class DashboardWindow(QWidget):
         try:
             self._apply_update(zip_path)
             new_ver = self._updater._latest_version
-            # Update version.json
-            ver_data = _read_version()
-            ver_data["version"] = new_ver
-            VERSION_PATH.write_text(json.dumps(ver_data, indent=2), encoding="utf-8")
-            self._update_status.setText(f"Updated to v{new_ver}! Restart Fish to apply.")
-            self._update_status.setStyleSheet("color: #4ADE80; font-size: 11px;")
-            self._version_label.setText(f"v{new_ver}")
-            self._update_btn.hide()
-            self._skip_btn.hide()
+            self._update_status.setText(
+                f"v{new_ver} ready! Click 'Apply & Restart' to install."
+            )
+            self._update_status.setStyleSheet("color: #FACC15; font-size: 11px;")
             self._update_changelog.hide()
             self._update_progress.hide()
+            # Swap buttons: hide Update/Skip, show Apply & Restart
+            self._update_btn.hide()
+            self._skip_btn.hide()
+            if not hasattr(self, "_apply_btn"):
+                self._apply_btn = QPushButton("Apply && Restart")
+                self._apply_btn.setObjectName("primary")
+                self._apply_btn.clicked.connect(self._on_apply_restart)
+                # Insert into the button row
+                self._update_btn.parent().layout().insertWidget(0, self._apply_btn)
+            self._apply_btn.show()
         except Exception as e:
             self._update_status.setText(f"Update failed: {str(e)[:60]}")
             self._update_status.setStyleSheet("color: #EF4444; font-size: 10px;")
@@ -1380,6 +1398,31 @@ class DashboardWindow(QWidget):
                 pass
             self._update_btn.setEnabled(True)
 
+    def _on_apply_restart(self):
+        """Launch the batch updater script, then quit so it can replace files."""
+        script = PROJECT_ROOT / "_apply_update.cmd"
+        if not script.exists():
+            self._update_status.setText("Update staging missing. Re-download needed.")
+            self._update_status.setStyleSheet("color: #EF4444; font-size: 10px;")
+            return
+        # Stop the fish first
+        app = QApplication.instance()
+        launcher = None
+        for w in app.topLevelWidgets():
+            if hasattr(w, "_stop_fish"):
+                launcher = w
+                break
+        if launcher:
+            launcher._stop_fish()
+        # Launch the batch script (hidden window)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(script)],
+            cwd=str(PROJECT_ROOT),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        # Quit the launcher so the script can replace it
+        QApplication.quit()
+
     def _on_download_error(self, err: str):
         self._update_status.setText(f"Download failed: {err[:60]}")
         self._update_status.setStyleSheet("color: #EF4444; font-size: 10px;")
@@ -1387,25 +1430,14 @@ class DashboardWindow(QWidget):
         self._update_btn.setEnabled(True)
 
     def _apply_update(self, zip_path: str):
-        """Extract update zip — backs up current, extracts new files."""
-        backup_dir = PROJECT_ROOT / "_backup"
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        """Extract update zip to staging and prepare batch updater script."""
+        staging = PROJECT_ROOT / "_update_staging"
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(exist_ok=True)
 
-        # Backup current key files
-        backup_dir.mkdir(exist_ok=True)
-        for item in ["main.py", "launcher.py", "version.json", "core", "widget",
-                      "games", "config"]:
-            src = PROJECT_ROOT / item
-            dst = backup_dir / item
-            if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            elif src.is_file():
-                shutil.copy2(src, dst)
-
-        # Extract zip
+        # Extract zip to staging
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            # GitHub zips have a top-level folder; detect and strip it
             names = zf.namelist()
             prefix = ""
             if names and "/" in names[0]:
@@ -1419,13 +1451,60 @@ class DashboardWindow(QWidget):
                     rel = rel[len(prefix):]
                 if not rel:
                     continue
-                # Don't overwrite user config
+                # Never overwrite user settings
                 if rel == "config/settings.json":
                     continue
-                dest = PROJECT_ROOT / rel
+                dest = staging / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(dest, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+
+        # Backup current key files
+        backup = PROJECT_ROOT / "_backup"
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        backup.mkdir(exist_ok=True)
+        for name in ["LittleFish.exe", "LittleFishLauncher.exe", "version.json",
+                      "littlefish.ico"]:
+            src = PROJECT_ROOT / name
+            if src.exists():
+                shutil.copy2(src, backup / name)
+
+        # Write batch script that waits for processes to exit, then copies files
+        launcher_exe = PROJECT_ROOT / "LittleFishLauncher.exe"
+        script_lines = [
+            "@echo off",
+            "echo Updating Little Fish, please wait...",
+            "",
+            "REM Wait for launcher to exit",
+            ":wait_launcher",
+            "timeout /t 1 /nobreak >nul",
+            'tasklist /FI "IMAGENAME eq LittleFishLauncher.exe" 2>nul '
+            "| findstr /I /C:\"LittleFishLauncher\" >nul",
+            "if %ERRORLEVEL%==0 goto wait_launcher",
+            "",
+            "REM Kill fish if still running",
+            'tasklist /FI "IMAGENAME eq LittleFish.exe" 2>nul '
+            "| findstr /I /C:\"LittleFish.exe\" >nul",
+            "if %ERRORLEVEL%==0 (",
+            "    taskkill /F /IM LittleFish.exe >nul 2>&1",
+            "    timeout /t 2 /nobreak >nul",
+            ")",
+            "",
+            "REM Copy staged files over the installation",
+            f'xcopy /E /Y /Q "{staging}\\" "{PROJECT_ROOT}\\"',
+            "",
+            "REM Clean up staging",
+            f'rmdir /S /Q "{staging}"',
+            "",
+            "REM Restart the launcher",
+            f'start "" "{launcher_exe}"',
+            "",
+            "REM Delete this script",
+            'del "%~f0"',
+        ]
+        script = PROJECT_ROOT / "_apply_update.cmd"
+        script.write_text("\r\n".join(script_lines), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Settings
@@ -1637,26 +1716,51 @@ class DashboardWindow(QWidget):
             return
         reply = QMessageBox.question(
             self, "Rollback",
-            "Restore all files from the last backup?\nThis will overwrite current code files.",
+            "Restore from the last backup?\n"
+            "The launcher will quit and restart with the previous version.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        try:
-            for item in backup_dir.iterdir():
-                dst = PROJECT_ROOT / item.name
-                if item.is_dir():
-                    if dst.exists():
-                        shutil.rmtree(dst, ignore_errors=True)
-                    shutil.copytree(item, dst, dirs_exist_ok=True)
-                elif item.is_file():
-                    shutil.copy2(item, dst)
-            self._update_status.setText("Rolled back! Restart Fish to apply.")
-            self._update_status.setStyleSheet("color: #FACC15; font-size: 11px;")
-            ver = _read_version()
-            self._version_label.setText(f"v{ver.get('version', '?')}")
-        except Exception as e:
-            QMessageBox.warning(self, "Rollback Failed", str(e))
+
+        # Write a rollback batch script (same approach as update)
+        launcher_exe = PROJECT_ROOT / "LittleFishLauncher.exe"
+        script_lines = [
+            "@echo off",
+            "echo Rolling back Little Fish...",
+            "",
+            ":wait_launcher",
+            "timeout /t 1 /nobreak >nul",
+            'tasklist /FI "IMAGENAME eq LittleFishLauncher.exe" 2>nul '
+            "| findstr /I /C:\"LittleFishLauncher\" >nul",
+            "if %ERRORLEVEL%==0 goto wait_launcher",
+            "",
+            'tasklist /FI "IMAGENAME eq LittleFish.exe" 2>nul '
+            "| findstr /I /C:\"LittleFish.exe\" >nul",
+            "if %ERRORLEVEL%==0 (",
+            "    taskkill /F /IM LittleFish.exe >nul 2>&1",
+            "    timeout /t 2 /nobreak >nul",
+            ")",
+            "",
+            f'xcopy /E /Y /Q "{backup_dir}\\" "{PROJECT_ROOT}\\"',
+            f'start "" "{launcher_exe}"',
+            'del "%~f0"',
+        ]
+        script = PROJECT_ROOT / "_rollback.cmd"
+        script.write_text("\r\n".join(script_lines), encoding="utf-8")
+
+        # Stop fish, launch script, quit
+        app = QApplication.instance()
+        for w in app.topLevelWidgets():
+            if hasattr(w, "_stop_fish"):
+                w._stop_fish()
+                break
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(script)],
+            cwd=str(PROJECT_ROOT),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        QApplication.quit()
 
     # ------------------------------------------------------------------
     # Mood Log Viewer
@@ -1824,6 +1928,17 @@ class LauncherApp:
         self._app = app
         self._fish_process: subprocess.Popen | None = None
         self._dashboard: DashboardWindow | None = None
+
+        # Clean up stale update staging/scripts from a previous update
+        for stale in ("_update_staging", "_apply_update.cmd", "_rollback.cmd"):
+            p = PROJECT_ROOT / stale
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.is_file():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
         # Tray icon
         self._tray = QSystemTrayIcon(_make_mood_icon("happy", False), app)

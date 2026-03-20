@@ -4,3 +4,7 @@ build/
 dist/
 Output/
 *.spec
+_backup/
+_update_staging/
+_apply_update.cmd
+_rollback.cmd
