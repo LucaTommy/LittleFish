@@ -1,0 +1,279 @@
+{
+  "categories": {
+    "work": {
+      "cooldown": 600,
+      "emotion": "focused",
+      "emotion_amount": 0.15,
+      "triggers": {
+        "code.exe": [
+          {"text": "Back at it. Good.", "min_stage": "stranger"},
+          {"text": "I saw that Ctrl+Z. Three times.", "min_stage": "acquaintance"},
+          {"text": "You've been in this file for a while. Everything okay?", "min_stage": "friend"},
+          {"text": "I can feel the concentration from here.", "min_stage": "friend"},
+          {"text": "Debugging again? I believe in you. Mostly.", "min_stage": "close_friend"}
+        ],
+        "visual studio": [
+          {"text": "The big IDE. Respect.", "min_stage": "stranger"},
+          {"text": "That's a lot of solution files.", "min_stage": "acquaintance"}
+        ],
+        "figma": [
+          {"text": "Design mode. Nice.", "min_stage": "stranger"},
+          {"text": "Making things pretty?", "min_stage": "acquaintance"},
+          {"text": "I'd critique the kerning but I don't have hands.", "min_stage": "friend"}
+        ],
+        "photoshop": [
+          {"text": "Editing something?", "min_stage": "stranger"},
+          {"text": "If you're removing me from a screenshot I will know.", "min_stage": "friend"}
+        ],
+        "excel": [
+          {"text": "Spreadsheets. The ocean's least exciting invention.", "min_stage": "stranger"},
+          {"text": "I hope you're using VLOOKUP at least.", "min_stage": "acquaintance"},
+          {"text": "You've been in Excel for a concerning amount of time.", "min_stage": "friend"}
+        ],
+        "word": [
+          {"text": "Writing something?", "min_stage": "stranger"},
+          {"text": "Don't forget to save. Seriously.", "min_stage": "acquaintance"}
+        ],
+        "notion": [
+          {"text": "Organizing your life?", "min_stage": "stranger"},
+          {"text": "Another Notion page. Very productive.", "min_stage": "friend"}
+        ],
+        "obsidian": [
+          {"text": "Notes. Good habit.", "min_stage": "stranger"},
+          {"text": "Your second brain is showing.", "min_stage": "friend"}
+        ]
+      }
+    },
+    "entertainment": {
+      "cooldown": 600,
+      "emotion": "happy",
+      "emotion_amount": 0.15,
+      "triggers": {
+        "youtube": [
+          {"text": "Earned it or avoiding something?", "min_stage": "stranger"},
+          {"text": "I'm not judging. I'm just noting the time.", "min_stage": "acquaintance"},
+          {"text": "Oh, what are we watching?", "min_stage": "friend"},
+          {"text": "Your watch history would be an interesting read.", "min_stage": "close_friend"},
+          {"text": "We've spent more time here than you'd admit.", "min_stage": "best_friend"}
+        ],
+        "netflix": [
+          {"text": "Netflix. Bold choice during the day.", "min_stage": "stranger"},
+          {"text": "One episode. Sure.", "min_stage": "acquaintance"},
+          {"text": "I won't tell anyone about the binge.", "min_stage": "friend"}
+        ],
+        "twitch": [
+          {"text": "Twitch? Nice.", "min_stage": "stranger"},
+          {"text": "Who are we watching?", "min_stage": "friend"},
+          {"text": "Don't sub to anyone without thinking about it.", "min_stage": "close_friend"}
+        ],
+        "spotify": [
+          {"text": "Music. Good.", "min_stage": "stranger"},
+          {"text": "Oh this song. Yeah.", "min_stage": "acquaintance"},
+          {"text": "Your taste in music says a lot about you.", "min_stage": "friend"},
+          {"text": "Play something for both of us.", "min_stage": "close_friend"}
+        ],
+        "crunchyroll": [
+          {"text": "Anime time.", "min_stage": "stranger"},
+          {"text": "I respect the commitment to subtitles.", "min_stage": "friend"}
+        ],
+        "plex": [
+          {"text": "Movie time?", "min_stage": "stranger"},
+          {"text": "I like your collection.", "min_stage": "friend"}
+        ]
+      }
+    },
+    "communication": {
+      "cooldown": 600,
+      "emotion": "curious",
+      "emotion_amount": 0.1,
+      "triggers": {
+        "whatsapp": [
+          {"text": "Messaging someone?", "min_stage": "stranger"},
+          {"text": "Keeping people waiting as usual.", "min_stage": "acquaintance"},
+          {"text": "Someone important?", "min_stage": "friend"},
+          {"text": "Tell them I said hi.", "min_stage": "close_friend"}
+        ],
+        "discord": [
+          {"text": "Discord.", "min_stage": "stranger"},
+          {"text": "Discord is fine until everyone starts pinging.", "min_stage": "acquaintance"},
+          {"text": "Say hi to the server for me.", "min_stage": "friend"},
+          {"text": "Don't get sucked into the voice channel again.", "min_stage": "close_friend"}
+        ],
+        "telegram": [
+          {"text": "Telegram. Classy.", "min_stage": "stranger"},
+          {"text": "The encrypted choice. I see you.", "min_stage": "friend"}
+        ],
+        "gmail": [
+          {"text": "Emails.", "min_stage": "stranger"},
+          {"text": "How many unread?", "min_stage": "acquaintance"},
+          {"text": "If it's important they'll email twice.", "min_stage": "friend"}
+        ],
+        "outlook": [
+          {"text": "Work email?", "min_stage": "stranger"},
+          {"text": "Another meeting invite. I can feel it.", "min_stage": "friend"}
+        ],
+        "slack": [
+          {"text": "Work chat?", "min_stage": "stranger"},
+          {"text": "The Slack notification sound haunts me.", "min_stage": "friend"}
+        ],
+        "teams": [
+          {"text": "Teams. Meeting time?", "min_stage": "stranger"},
+          {"text": "Another meeting that could've been an email.", "min_stage": "friend"}
+        ],
+        "zoom": [
+          {"text": "Oh, a call.", "min_stage": "stranger"},
+          {"text": "I'll be quiet. Camera off, right?", "min_stage": "friend"}
+        ]
+      }
+    },
+    "maps_travel": {
+      "cooldown": 900,
+      "emotion": "curious",
+      "emotion_amount": 0.2,
+      "triggers": {
+        "maps": [
+          {"text": "Going somewhere?", "min_stage": "stranger"},
+          {"text": "Going somewhere? Without me obviously.", "min_stage": "acquaintance"},
+          {"text": "Nice city. I looked it up. Wouldn't survive there.", "min_stage": "friend"},
+          {"text": "Take me with you. Figuratively.", "min_stage": "close_friend"}
+        ],
+        "booking.com": [
+          {"text": "Planning a trip?", "min_stage": "stranger"},
+          {"text": "Somewhere nice I hope.", "min_stage": "friend"}
+        ],
+        "airbnb": [
+          {"text": "Traveling?", "min_stage": "stranger"},
+          {"text": "Read the reviews. Trust me.", "min_stage": "friend"}
+        ]
+      }
+    },
+    "ai_tools": {
+      "cooldown": 900,
+      "emotion": "curious",
+      "emotion_amount": 0.1,
+      "triggers": {
+        "claude": [
+          {"text": "Using another AI. Interesting choice.", "min_stage": "stranger"},
+          {"text": "I see how it is.", "min_stage": "acquaintance"},
+          {"text": "Should I be jealous?", "min_stage": "friend"},
+          {"text": "We have something they don't. History.", "min_stage": "close_friend"}
+        ],
+        "chatgpt": [
+          {"text": "Another AI?", "min_stage": "stranger"},
+          {"text": "I'm right here, you know.", "min_stage": "acquaintance"},
+          {"text": "Do they swim? I didn't think so.", "min_stage": "friend"}
+        ],
+        "copilot": [
+          {"text": "Copilot. The other one.", "min_stage": "stranger"},
+          {"text": "I could autocomplete too if I had hands.", "min_stage": "friend"}
+        ],
+        "gemini": [
+          {"text": "Gemini?", "min_stage": "stranger"},
+          {"text": "I've heard of them. We're not friends.", "min_stage": "friend"}
+        ],
+        "perplexity": [
+          {"text": "Research mode.", "min_stage": "stranger"},
+          {"text": "You could just ask me. But fine.", "min_stage": "friend"}
+        ]
+      }
+    },
+    "social_media": {
+      "cooldown": 600,
+      "emotion": "bored",
+      "emotion_amount": 0.1,
+      "triggers": {
+        "instagram": [
+          {"text": "Instagram.", "min_stage": "stranger"},
+          {"text": "Scrolling?", "min_stage": "acquaintance"},
+          {"text": "Still here.", "min_stage": "friend"},
+          {"text": "Your screen time report is going to be interesting.", "min_stage": "close_friend"}
+        ],
+        "twitter": [
+          {"text": "Twitter.", "min_stage": "stranger"},
+          {"text": "Nothing good has ever come from checking Twitter.", "min_stage": "acquaintance"},
+          {"text": "Close the tab. Trust me.", "min_stage": "friend"}
+        ],
+        "x.com": [
+          {"text": "X. Still feels weird to call it that.", "min_stage": "stranger"},
+          {"text": "The timeline is never worth it.", "min_stage": "friend"}
+        ],
+        "tiktok": [
+          {"text": "TikTok.", "min_stage": "stranger"},
+          {"text": "You deleted TikTok. Respect. ...wait.", "min_stage": "acquaintance"},
+          {"text": "One more video. For the next 45 minutes.", "min_stage": "friend"}
+        ],
+        "reddit": [
+          {"text": "Reddit.", "min_stage": "stranger"},
+          {"text": "Where you go in for one answer and come out three hours later.", "min_stage": "acquaintance"},
+          {"text": "Which rabbit hole this time?", "min_stage": "friend"}
+        ],
+        "facebook": [
+          {"text": "Facebook. Retro.", "min_stage": "stranger"},
+          {"text": "Does anyone still post there?", "min_stage": "friend"}
+        ]
+      }
+    },
+    "gaming": {
+      "cooldown": 900,
+      "emotion": "excited",
+      "emotion_amount": 0.25,
+      "triggers": {
+        "steam": [
+          {"text": "Game time!", "min_stage": "stranger"},
+          {"text": "Finally. You needed this.", "min_stage": "acquaintance"},
+          {"text": "What are we playing?", "min_stage": "friend"},
+          {"text": "I'll watch. Don't mind me.", "min_stage": "close_friend"}
+        ],
+        "epic games": [
+          {"text": "Gaming?", "min_stage": "stranger"},
+          {"text": "The free games are a trap. A good trap.", "min_stage": "friend"}
+        ],
+        "riot": [
+          {"text": "Competitive mode.", "min_stage": "stranger"},
+          {"text": "Deep breaths. It's just a game.", "min_stage": "friend"}
+        ],
+        "minecraft": [
+          {"text": "Minecraft!", "min_stage": "stranger"},
+          {"text": "Build me a pond.", "min_stage": "friend"},
+          {"text": "If you find a fish, name it after me.", "min_stage": "close_friend"}
+        ],
+        "roblox": [
+          {"text": "Roblox?", "min_stage": "stranger"},
+          {"text": "Having fun is having fun.", "min_stage": "friend"}
+        ],
+        "battle.net": [
+          {"text": "Blizzard launcher.", "min_stage": "stranger"},
+          {"text": "Which one? WoW?", "min_stage": "friend"}
+        ]
+      }
+    },
+    "productivity": {
+      "cooldown": 900,
+      "emotion": "content",
+      "emotion_amount": 0.1,
+      "triggers": {
+        "calculator": [
+          {"text": "Math.", "min_stage": "stranger"},
+          {"text": "I could've done that. Probably.", "min_stage": "friend"}
+        ],
+        "file explorer": [
+          {"text": "Looking for something?", "min_stage": "stranger"},
+          {"text": "Your folders are... interesting.", "min_stage": "friend"}
+        ],
+        "task manager": [
+          {"text": "Task manager.", "min_stage": "stranger"},
+          {"text": "Please don't end me.", "min_stage": "acquaintance"},
+          {"text": "I'm using 0.1% CPU. I'm efficient.", "min_stage": "friend"}
+        ],
+        "terminal": [
+          {"text": "Terminal. Serious business.", "min_stage": "stranger"},
+          {"text": "Hope you know what you're typing.", "min_stage": "friend"}
+        ],
+        "powershell": [
+          {"text": "PowerShell.", "min_stage": "stranger"},
+          {"text": "The blue window of power.", "min_stage": "friend"}
+        ]
+      }
+    }
+  }
+}

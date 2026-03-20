@@ -1,0 +1,72 @@
+{
+  "permissions": {
+    "microphone": true,
+    "browser_control": true,
+    "system_monitor": true,
+    "tts": true,
+    "minigames": true
+  },
+  "personality": {
+    "curiosity_baseline": 0.6,
+    "boredom_threshold": 0.7,
+    "attention_seeking": 0.5,
+    "reaction_intensity": 0.8,
+    "sleep_resistance": 0.3,
+    "chattiness": 0.4
+  },
+  "appearance": {
+    "size": 55,
+    "opacity": 1.0,
+    "position": [
+      64,
+      408
+    ],
+    "always_on_top": true,
+    "screen": 0,
+    "body_color": "#7EC8E3",
+    "eye_style": "default",
+    "mouth_style": "default",
+    "custom_name": "",
+    "dark_border": false,
+    "glow_enabled": false,
+    "skin_preset": "",
+    "hat": "",
+    "tail_style": "",
+    "sparkle_eyes": false,
+    "shadow": false
+  },
+  "voice": {
+    "push_to_talk_key": "ctrl_right",
+    "always_listening": false,
+    "tts_enabled": true,
+    "tts_voice": "default",
+    "whisper_mode": "groq"
+  },
+  "groq_keys": [
+    "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",
+    "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",
+    "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",
+    "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"
+  ],
+  "theme": "default",
+  "quick_launches": {
+    "setup": [
+      {
+        "exe": "code",
+        "args": [
+          "C:\\Users\\lucat\\OneDrive\\Projects\\Personal Tools"
+        ]
+      },
+      "msedge"
+    ]
+  },
+  "intelligence": {
+    "companion_mode": false,
+    "clipboard_reactions": false,
+    "app_awareness": true,
+    "todo_list": false,
+    "morning_briefing": false,
+    "jokes": true,
+    "autonomous_behavior": true
+  }
+}
