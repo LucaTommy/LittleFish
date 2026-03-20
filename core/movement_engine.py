@@ -158,8 +158,13 @@ class MovementEngine:
     def resume(self):
         self._paused = False
 
+    def _is_deep_sleep(self) -> bool:
+        return self._emo.values.get("sleepy", 0) >= 0.7
+
     def notify_stimulus(self, x: int, y: int):
         """Something interesting appeared at *(x, y)* — maybe dash over."""
+        if self._is_deep_sleep():
+            return
         if self._emo.values.get("curious", 0) > 0.15:
             self._target_x = float(x)
             self._target_y = float(y)
@@ -167,14 +172,20 @@ class MovementEngine:
 
     def force_wander(self):
         """Behaviour engine says 'go wander'."""
+        if self._is_deep_sleep():
+            return
         self._enter(MovementState.WANDER)
 
     def force_chase(self):
         """Behaviour engine says 'follow the cursor'."""
+        if self._is_deep_sleep():
+            return
         self._enter(MovementState.CHASE)
 
     def force_settle(self, x: float | None = None, y: float | None = None):
         """Walk to a specific edge spot, or auto-pick nearest."""
+        if self._is_deep_sleep():
+            return
         if x is not None and y is not None:
             self._target_x = x
             self._target_y = y
@@ -195,6 +206,14 @@ class MovementEngine:
         self._track_cursor(dt)
         self._state_time += dt
         self._cooldown = max(0.0, self._cooldown - dt)
+
+        # Deep sleep override — always checked, ignores cooldown
+        if self._emo.values.get("sleepy", 0) >= 0.7:
+            if self._state != MovementState.IDLE:
+                self._enter(MovementState.IDLE)
+            self._vx = 0.0
+            self._vy = 0.0
+            return
 
         if self._cooldown <= 0:
             self._evaluate_transitions()

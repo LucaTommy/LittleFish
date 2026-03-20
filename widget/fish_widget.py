@@ -135,11 +135,11 @@ class FishWidget(QWidget):
         )
         self._chat.set_context_getter(self._get_chat_context)
         self._chat.response_ready.connect(self._on_chat_response)
-        self._chat.error_occurred.connect(lambda e: self._show_bubble("I can't think right now..."))
+        self._chat.error_occurred.connect(lambda e: self._say("I can't think right now..."))
 
         self._reviewer = ScreenReviewer(groq_keys)
         self._reviewer.review_ready.connect(self._on_review_ready)
-        self._reviewer.error_occurred.connect(lambda e: self._show_bubble(str(e)))
+        self._reviewer.error_occurred.connect(lambda e: self._say(str(e)))
         self._review_focus: str | None = None
 
         self._bubble = ChatBubble()
@@ -230,6 +230,9 @@ class FishWidget(QWidget):
         self._app_reactor = AppReactions()
         self._music_playing = False
         self._chat_window = None
+        # Eagerly create chat window (hidden) so all messages route there
+        from widget.chat_window import ChatWindow
+        self._chat_window = ChatWindow(self._chat, self)
 
         # Jokes/fact timer (every 30-60 min)
         self._joke_timer = QTimer(self)
@@ -841,7 +844,7 @@ class FishWidget(QWidget):
         self._long_press_triggered = True
         self.emotions.spike("curious", 0.3)
         self.animator.queue_reaction(ReactionType.WIGGLE)
-        self._show_bubble("Hey... you can let go now...")
+        self._say("Hey... you can let go now...")
         self.emotions.on_positive_interaction()
 
     # ------------------------------------------------------------------
@@ -864,7 +867,7 @@ class FishWidget(QWidget):
         self.emotions.on_shaken()
         self.animator.queue_reaction(ReactionType.SHAKE_OFF)
         self.animator.spawn_particle("exclamation")
-        self._show_bubble("Woah! Stop that!")
+        self._say("Woah! Stop that!")
         self._relationship.add_points("shake")
 
     # ------------------------------------------------------------------
@@ -884,10 +887,10 @@ class FishWidget(QWidget):
             urls = mime.urls()
             if urls:
                 name = urls[0].fileName() or urls[0].toString()
-                self._show_bubble(f"Ooh, what's this? {name[:30]}...")
+                self._say(f"Ooh, what's this? {name[:30]}...")
         elif mime.hasText():
             snippet = mime.text()[:30]
-            self._show_bubble(f"Hmm... '{snippet}'...")
+            self._say(f"Hmm... '{snippet}'...")
         self.emotions.spike("curious", 0.4)
         self.animator.spawn_particle("question")
         self.emotions.on_positive_interaction()
@@ -1025,7 +1028,7 @@ class FishWidget(QWidget):
         try:
             result = self._cmd_parser.parse(text)
         except Exception:
-            self._show_bubble("Something went wrong parsing that.")
+            self._say("Something went wrong parsing that.")
             return
 
         # No command matched — fall back to AI conversation
@@ -1037,7 +1040,7 @@ class FishWidget(QWidget):
         try:
             self._execute_command(result)
         except Exception:
-            self._show_bubble("Oops, something went wrong with that command.")
+            self._say("Oops, something went wrong with that command.")
             self._tts.say("Sorry, that didn't work.")
 
     def _execute_command(self, result):
@@ -1241,11 +1244,8 @@ class FishWidget(QWidget):
 
         # Show response in bubble + speak it
         if result.response:
-            self._show_bubble(result.response)
+            self._say(result.response)
             self._tts.say(result.response)
-            # Sync to chat window if open
-            if self._chat_window is not None and self._chat_window.isVisible():
-                self._chat_window._add_fish_message(result.response)
 
     def _on_chat_response(self, text: str):
         """Called when AI chat generates a response."""
@@ -1277,23 +1277,21 @@ class FishWidget(QWidget):
 
     def _start_screen_review(self, focus: str | None = None):
         """Kick off screenshot → OCR → Groq review pipeline."""
-        self._show_bubble("Let me take a look...")
+        self._say("Let me take a look...")
         self._tts.say("Let me take a look.")
         self.animator.queue_reaction(ReactionType.HEAD_TILT)
         self._reviewer.review(focus)
 
     def _on_review_ready(self, text: str):
         """Called when ScreenReviewer delivers the critique."""
-        self._show_bubble(text)
+        self._say(text)
         self._tts.say(text)
         self.emotions.spike("curious", 0.3)
         self.animator.queue_reaction(ReactionType.NOD)
         self._shared_state.record_phrase()
-        # Auto-open chat window so the review is always readable & persistent
-        if self._chat_window is None or not self._chat_window.isVisible():
+        # Auto-open chat window so the review is always readable
+        if not self._chat_window.isVisible():
             self._open_chat_window()
-        self._chat_window._add_system_bubble("Screen Review")
-        self._chat_window._add_fish_message(text)
 
     def _show_bubble(self, text: str):
         """Display a chat bubble above the fish."""
@@ -1302,8 +1300,15 @@ class FishWidget(QWidget):
 
     def _sync_to_chat(self, text: str):
         """Route fish-initiated messages to the chat window."""
-        if self._chat_window is not None:
-            self._chat_window._add_fish_message(text)
+        if self._chat_window is None:
+            from widget.chat_window import ChatWindow
+            self._chat_window = ChatWindow(self._chat, self)
+        self._chat_window._add_fish_message(text)
+
+    def _say(self, text: str):
+        """Show bubble + always sync to chat history. Use this for all fish speech."""
+        self._show_bubble(text)
+        self._sync_to_chat(text)
 
     # ------------------------------------------------------------------
     # API / async command helpers
@@ -1356,15 +1361,12 @@ class FishWidget(QWidget):
             QTimer.singleShot(0, lambda: self._show_api_result(text))
 
         threading.Thread(target=_work, daemon=True).start()
-        self._show_bubble("Let me check...")
+        self._say("Let me check...")
 
     def _show_api_result(self, text: str):
-        self._show_bubble(text)
+        self._say(text)
         self._tts.say(text)
         self.emotions.spike("happy", 0.1)
-        # Sync to chat window if open
-        if self._chat_window is not None and self._chat_window.isVisible():
-            self._chat_window._add_fish_message(text)
 
     def _find_file(self, name: str) -> str:
         """Search user home for a file by name."""
@@ -1498,7 +1500,7 @@ class FishWidget(QWidget):
 
     def _posture_reminder(self):
         """Auto-triggered every 2 hours to remind user to stretch."""
-        self._show_bubble("You've been sitting for 2 hours! Time to stretch and take a break.")
+        self._say("You've been sitting for 2 hours! Time to stretch and take a break.")
         self._tts.say("Hey! You've been sitting for a while. Stand up and stretch!")
         self.emotions.spike("worried", 0.2)
         self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -1585,7 +1587,7 @@ class FishWidget(QWidget):
         if not hasattr(self, '_active_timers'):
             self._active_timers = []
         self._active_timers.append(timer)
-        self._show_bubble(f"Media will pause in {minutes} minutes.")
+        self._say(f"Media will pause in {minutes} minutes.")
         self._tts.say(f"Got it, I'll pause your media in {minutes} minutes.")
 
     def _on_media_sleep_done(self):
@@ -1597,7 +1599,7 @@ class FishWidget(QWidget):
             ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 2, 0)
         except Exception:
             pass
-        self._show_bubble("Media paused. Goodnight!")
+        self._say("Media paused. Goodnight!")
         self._tts.say("I've paused your media. Goodnight!")
         self.emotions.spike("sleepy", 0.3)
 
@@ -1692,50 +1694,42 @@ class FishWidget(QWidget):
         # Skip high-energy behaviors while sleeping, but allow gentle ones
         is_sleepy = self.emotions.dominant_emotion() == "sleepy"
         if is_sleepy and action in ("dance", "spin", "throw_particle", "bubble_particle",
-                                     "bounce", "follow_cursor"):
+                                     "bounce", "follow_cursor", "wander", "peek_edge"):
             return
 
         if action == "say" and message:
-            # Dynamic message for certain behaviors
             final_msg = message
-            self._show_bubble(final_msg)
+            self._say(final_msg)
             self._tts.say(final_msg)
-            self._sync_to_chat(final_msg)
         elif action == "thought":
             thought = self._behavior_engine.get_random_thought()
-            self._show_bubble(thought)
-            self._sync_to_chat(thought)
+            self._say(thought)
         elif action == "rate_app":
             rating = self._behavior_engine.get_app_rating()
-            self._show_bubble(rating)
+            self._say(rating)
             self._tts.say(rating)
-            self._sync_to_chat(rating)
         elif action == "opinion":
             msg = self._behavior_engine.get_opinion_message()
             if msg:
-                self._show_bubble(msg)
+                self._say(msg)
                 self._tts.say(msg)
-                self._sync_to_chat(msg)
         elif action == "backstory":
             msg = self._behavior_engine.get_backstory_fragment()
             if msg:
-                self._show_bubble(msg)
+                self._say(msg)
                 self._tts.say(msg)
-                self._sync_to_chat(msg)
         elif action == "milestone":
             mid, msg = self._behavior_engine.get_milestone_data()
             if msg:
-                self._show_bubble(msg)
+                self._say(msg)
                 self._tts.say(msg)
-                self._sync_to_chat(msg)
                 self.animator.spawn_particle("sparkle")
                 self.animator.queue_reaction(ReactionType.BOUNCE)
         elif action == "separation_greeting":
             msg = self._behavior_engine.get_separation_greeting()
             if msg:
-                self._show_bubble(msg)
+                self._say(msg)
                 self._tts.say(msg)
-                self._sync_to_chat(msg)
                 self._behavior_engine._separation_greeting_given = True
         elif action == "comfortable_silence":
             # Just a gentle particle — no words needed
@@ -1751,8 +1745,7 @@ class FishWidget(QWidget):
             self.emotions.values["sleepy"] = 0.2
             self.animator.queue_reaction(ReactionType.BOUNCE)
             if message:
-                self._show_bubble(message)
-                self._sync_to_chat(message)
+                self._say(message)
         elif action == "yawn":
             self.animator.spawn_particle("zzz")
         elif action == "stare":
@@ -1775,27 +1768,23 @@ class FishWidget(QWidget):
             self.emotions.values["sleepy"] = 0.9
             self.animator.spawn_particle("zzz")
             if message:
-                self._show_bubble(message)
-                self._sync_to_chat(message)
+                self._say(message)
         elif action == "grumpy":
             self.emotions.spike("worried", 0.3)
             if message:
-                self._show_bubble(message)
-                self._sync_to_chat(message)
+                self._say(message)
         elif action == "blink":
             self.animator.queue_reaction(ReactionType.BOUNCE)
         elif action == "excited":
             self.emotions.spike("excited", 0.4)
             self.animator.queue_reaction(ReactionType.BOUNCE)
             if message:
-                self._show_bubble(message)
-                self._sync_to_chat(message)
+                self._say(message)
         elif action == "worried":
             self.emotions.spike("worried", 0.3)
             self.animator.spawn_particle("sweat")
             if message:
-                self._show_bubble(message)
-                self._sync_to_chat(message)
+                self._say(message)
         elif action == "focus":
             self.emotions.spike("focused", 0.4)
         elif action == "wander":
@@ -1929,21 +1918,21 @@ class FishWidget(QWidget):
     def _on_listening_started(self):
         self.emotions.on_mic_active()
         self.animator.set_face("curious")
-        self._show_bubble("I'm listening...")
+        self._say("I'm listening...")
 
     def _on_listening_stopped(self):
         self._bubble.dismiss()
 
     def _on_voice_error(self, msg: str):
         print(f"[Voice Error] {msg}")
-        self._show_bubble(f"Oops: {msg[:60]}")
+        self._say(f"Oops: {msg[:60]}")
 
     def _on_compliment(self):
         self.emotions.on_compliment()
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self.animator.spawn_particle("heart")
         self.animator.spawn_particle("sparkle")
-        self._show_bubble("Aww, thank you!")
+        self._say("Aww, thank you!")
         self._relationship.add_points("compliment")
         self._behavior_engine.record_interaction()
 
@@ -1951,7 +1940,7 @@ class FishWidget(QWidget):
         self.emotions.on_insult()
         self.animator.queue_reaction(ReactionType.FLINCH)
         self.animator.spawn_particle("sweat")
-        self._show_bubble("That... that hurt...")
+        self._say("That... that hurt...")
         self._relationship.add_points("insult")
         self._behavior_engine.record_interaction()
 
@@ -1959,7 +1948,7 @@ class FishWidget(QWidget):
         self.emotions.on_name_called()
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self.animator.spawn_particle("exclamation")
-        self._show_bubble("You called?")
+        self._say("You called?")
 
     def _on_whisper(self):
         self.emotions.on_whisper_detected()
@@ -2007,10 +1996,8 @@ class FishWidget(QWidget):
         # 30% pool phrase (simple emotes), 70% AI-generated (conversational)
         if (random.random() < 0.3 or not self._config.get("groq_keys")):
             phrase = random.choice(UNPROMPTED_PHRASES)
-            self._show_bubble(phrase)
+            self._say(phrase)
             self._tts.say(phrase)
-            # Route to chat window so user can respond
-            self._sync_to_chat(phrase)
         else:
             self._chat.send_unprompted()
 
@@ -2183,7 +2170,7 @@ class FishWidget(QWidget):
             self._shared_state.record_game()
             self._relationship.add_points("game_played")
             starts = ["Let's go!", "Game time!", "Here we go!"]
-            self._show_bubble(_rng.choice(starts))
+            self._say(_rng.choice(starts))
             return
 
         if event == "quit":
@@ -2199,14 +2186,14 @@ class FishWidget(QWidget):
         elif event == "ate_bad":
             self.animator.queue_reaction(ReactionType.FLINCH)
             self.animator.spawn_particle("sweat")
-            self._show_bubble(_rng.choice(["Bleh! A bug!", "Eww!", "That was NOT food!"]))
+            self._say(_rng.choice(["Bleh! A bug!", "Eww!", "That was NOT food!"]))
             self.emotions.spike("worried", 0.2)
 
         elif event == "frustrated_trying":
             self.emotions.spike("frustrated", 0.5)
             self.animator.set_face("frustrated")
             self.animator.queue_reaction(ReactionType.RAGE_SHAKE)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "Come ON! I can do this!", "Okay, focus!!", "TRYING HARDER.",
             ]))
 
@@ -2214,7 +2201,7 @@ class FishWidget(QWidget):
             self.emotions.spike("frustrated", 0.4)
             self.animator.set_face("frustrated")
             self.animator.queue_reaction(ReactionType.WIGGLE)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "*dramatic sigh* This is hopeless...",
                 "I give up. The food wins.",
                 "Maybe I'm just not hungry...",
@@ -2235,13 +2222,13 @@ class FishWidget(QWidget):
             self.animator.spawn_particle("confetti")
             self.animator.queue_reaction(ReactionType.STRETCH)
             self.emotions.spike("excited", 0.4)
-            self._show_bubble(_rng.choice(["Combo!", "On fire!", "POP POP POP!"]))
+            self._say(_rng.choice(["Combo!", "On fire!", "POP POP POP!"]))
 
         elif event == "miss_badly":
             self.animator.queue_reaction(ReactionType.SQUISH_H)
             self.animator.spawn_particle("sweat")
             self.emotions.spike("worried", 0.3)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "*covers face*", "I can't look...",
                 "That was embarrassing...", "pretend you didn't see that",
             ]))
@@ -2254,7 +2241,7 @@ class FishWidget(QWidget):
         elif event == "died_immediately":
             self.emotions.on_game_finished(won=False)
             self.animator.queue_reaction(ReactionType.WIGGLE)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "I meant to do that.",
                 "Speed run. Any percent.",
                 "That was a practice round.",
@@ -2267,7 +2254,7 @@ class FishWidget(QWidget):
             self.animator.set_face("frustrated")
             self.animator.queue_reaction(ReactionType.RAGE_SHAKE)
             self.animator.spawn_particle("sweat")
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "NO! I was doing so well!",
                 "SO close! UGH!",
                 "*genuine anguish*",
@@ -2277,7 +2264,7 @@ class FishWidget(QWidget):
         elif event == "died_normal":
             self.emotions.on_game_finished(won=False)
             self.animator.queue_reaction(ReactionType.FLINCH)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "Oof!", "Not bad, not great.",
                 "One more try?", "I'll get it next time.",
             ]))
@@ -2286,19 +2273,19 @@ class FishWidget(QWidget):
             self.animator.spawn_particle("sparkle")
             self.animator.spawn_particle("star")
             self.emotions.spike("excited", 0.4)
-            self._show_bubble("10 pipes! I'm amazing!")
+            self._say("10 pipes! I'm amazing!")
 
         elif event == "milestone_25":
             self.animator.spawn_particle("confetti")
             self.animator.spawn_particle("confetti")
             self.emotions.spike("excited", 0.6)
-            self._show_bubble("25?! I'm a LEGEND!")
+            self._say("25?! I'm a LEGEND!")
 
         # ── Ending events (all games) ───────────────────────────────
         elif event == "total_fail":
             self.emotions.on_game_finished(won=False)
             self.animator.queue_reaction(ReactionType.DIZZY)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "Well... at least I tried.",
                 "We don't talk about this.",
                 "That was... something.",
@@ -2308,7 +2295,7 @@ class FishWidget(QWidget):
             self.emotions.on_game_finished(won=False)
             self.animator.queue_reaction(ReactionType.FLINCH)
             self.animator.spawn_particle("sweat")
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "Rough round...", "I've had better days.",
                 "Practice makes perfect, right?",
             ]))
@@ -2316,7 +2303,7 @@ class FishWidget(QWidget):
         elif event == "decent_game":
             self.emotions.on_game_finished(won=False)
             self.animator.queue_reaction(ReactionType.NOD)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "Not bad!", "Solid run!",
                 "Room for improvement, but decent!",
             ]))
@@ -2328,7 +2315,7 @@ class FishWidget(QWidget):
             self.animator.spawn_particle("confetti")
             self.animator.queue_reaction(ReactionType.BOUNCE)
             self.emotions.spike("excited", 0.8)
-            self._show_bubble(_rng.choice([
+            self._say(_rng.choice([
                 "NEW HIGH SCORE!!!", "I'M THE CHAMPION!",
                 "🏆 BEST. FISH. EVER. 🏆",
             ]))
@@ -2349,7 +2336,7 @@ class FishWidget(QWidget):
         self.animator.set_face("sleepy")
         self.animator.trigger_nod_off()
         self.animator.spawn_particle("zzz")
-        self._show_bubble("*yawns*... goodnight...")
+        self._say("*yawns*... goodnight...")
         self._tts.say("goodnight")
 
     # ------------------------------------------------------------------
@@ -2377,7 +2364,7 @@ class FishWidget(QWidget):
     def _on_timer_done(self, timer):
         name = getattr(timer, '_fish_name', '')
         label = f"{name} timer" if name else "Timer"
-        self._show_bubble(f"{label}: Time's up!")
+        self._say(f"{label}: Time's up!")
         self._tts.say(f"Hey! {label} is done!")
         self.emotions.spike("excited", 0.4)
         self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -2401,7 +2388,7 @@ class FishWidget(QWidget):
         self._active_timers.append(timer)
 
     def _on_reminder_done(self, timer, message: str):
-        self._show_bubble(f"Reminder: {message}")
+        self._say(f"Reminder: {message}")
         self._tts.say(f"Hey! Don't forget: {message}")
         self.emotions.spike("excited", 0.3)
         self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -2415,11 +2402,11 @@ class FishWidget(QWidget):
         from core.command_parser import _parse_alarm_time
         seconds, label = _parse_alarm_time(time_str)
         if seconds is None:
-            self._show_bubble(f"Couldn't understand the time: {time_str}")
+            self._say(f"Couldn't understand the time: {time_str}")
             self._tts.say("Sorry, I couldn't understand that time.")
             return
         self._start_timer(seconds, name=f"alarm ({label})")
-        self._show_bubble(f"Alarm set for {label}!")
+        self._say(f"Alarm set for {label}!")
         self._tts.say(f"Alarm set for {label}.")
 
     def _list_active_timers(self) -> str:
@@ -2479,7 +2466,7 @@ class FishWidget(QWidget):
         work_timer._fish_seconds = 25 * 60
 
         def _on_work_done():
-            self._show_bubble("Pomodoro work phase done! Take a 5-minute break.")
+            self._say("Pomodoro work phase done! Take a 5-minute break.")
             self._tts.say("Work phase done! Take a break.")
             self.emotions.spike("happy", 0.3)
             self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -2504,12 +2491,12 @@ class FishWidget(QWidget):
         if not hasattr(self, '_active_timers'):
             self._active_timers = []
         self._active_timers.append(work_timer)
-        self._show_bubble(f"Pomodoro #{count} started! 25 minutes of focus.")
+        self._say(f"Pomodoro #{count} started! 25 minutes of focus.")
         self._tts.say(f"Pomodoro {count} started. Focus time!")
         self.emotions.spike("focused", 0.4)
 
     def _on_pomo_break_done(self, timer):
-        self._show_bubble("Break's over! Ready for another round?")
+        self._say("Break's over! Ready for another round?")
         self._tts.say("Break's over! Ready for another round?")
         self.emotions.spike("excited", 0.3)
         self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -2540,12 +2527,12 @@ class FishWidget(QWidget):
             return
         self._pending_power = None
         if action in ("shutdown", "shut down"):
-            self._show_bubble("Shutting down... goodbye!")
+            self._say("Shutting down... goodbye!")
             self._tts.say("Goodbye!")
             self._quit()
             subprocess.run(["shutdown", "/s", "/t", "5"], shell=True)
         elif action in ("restart", "reboot"):
-            self._show_bubble("Restarting... see you soon!")
+            self._say("Restarting... see you soon!")
             self._tts.say("See you soon!")
             self._quit()
             subprocess.run(["shutdown", "/r", "/t", "5"], shell=True)
@@ -2688,7 +2675,7 @@ class FishWidget(QWidget):
         self.emotions.on_user_returned()
         self._behavior_engine.record_interaction()
         self._relationship.add_points("conversation")
-        self._show_bubble("Hey, welcome back!")
+        self._say("Hey, welcome back!")
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self.animator.spawn_particle("sparkle")
         # Intelligence: record activity + morning briefing
@@ -2730,7 +2717,7 @@ class FishWidget(QWidget):
         self.animator.spawn_particle("spark")
         self.animator.spawn_particle("sparkle")
         self.animator.queue_reaction(ReactionType.BOUNCE)
-        self._show_bubble("Fully charged!")
+        self._say("Fully charged!")
 
     def _on_ram_high(self):
         self.emotions.on_ram_high()
@@ -2749,7 +2736,7 @@ class FishWidget(QWidget):
 
     def _on_screen_unlocked(self):
         self.emotions.on_screen_unlocked()
-        self._show_bubble("Oh! You're back!")
+        self._say("Oh! You're back!")
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self.animator.queue_reaction(ReactionType.STRETCH)
         self.animator.spawn_particle("sparkle")
@@ -2771,7 +2758,7 @@ class FishWidget(QWidget):
         self.emotions.on_network_lost()
         self.animator.spawn_particle("antenna_down")
         self.animator.spawn_particle("sweat")
-        self._show_bubble("The internet went away...")
+        self._say("The internet went away...")
 
     def _on_network_restored(self):
         self.emotions.on_network_restored()
@@ -2847,9 +2834,8 @@ class FishWidget(QWidget):
                 if result["emotion"]:
                     self.emotions.spike(result["emotion"], result["emotion_amount"])
                 if result["text"]:
-                    self._show_bubble(result["text"])
+                    self._say(result["text"])
                     self._tts.say(result["text"])
-                    self._sync_to_chat(result["text"])
         except Exception:
             pass
 
@@ -2891,7 +2877,7 @@ class FishWidget(QWidget):
             mood = self.emotions.dominant_emotion()
             todo_count = self._todo_list.count_pending()
             msg = generate_morning_briefing(weather, mood, todo_count)
-            self._show_bubble(msg)
+            self._say(msg)
             self._tts.say(msg)
             self._briefing_given_today = True
             self.animator.queue_reaction(ReactionType.BOUNCE)
@@ -2911,7 +2897,7 @@ class FishWidget(QWidget):
         if self._quiet_mode:
             return
         joke = get_random_joke_or_fact()
-        self._show_bubble(joke)
+        self._say(joke)
         self._tts.say(joke)
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self._joke_timer.setInterval(random.randint(1800000, 3600000))

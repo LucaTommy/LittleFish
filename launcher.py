@@ -96,7 +96,7 @@ def _clean_stale_state():
 # ---------------------------------------------------------------------------
 
 VERSION_PATH = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT)) / "version.json"
-GITHUB_REPO = "lucataco/LittleFish"  # Change to your actual repo
+GITHUB_REPO = "LucaTommy/LittleFish"
 
 
 def _read_version() -> dict:
