@@ -259,6 +259,7 @@ class Animator:
         self._seq_gaze_override = None  # (dx, dy) or None
         self.active_prop = None         # AnimProp or None (for renderer)
         self.is_playing_sequence: bool = False
+        self.on_step_executed = None     # callback(step, seq_name) or None
 
     # ------------------------------------------------------------------
     # Public API
@@ -592,6 +593,9 @@ class Animator:
             self._seq_gaze_override = step.look_dir
             if step.look_dir == (0.0, 0.0):
                 self._seq_gaze_override = None
+
+        if self.on_step_executed and self._seq_active:
+            self.on_step_executed(step, self._seq_active.name)
 
     # ------------------------------------------------------------------
     # Particles

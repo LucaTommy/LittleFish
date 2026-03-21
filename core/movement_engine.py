@@ -159,15 +159,22 @@ class MovementEngine:
         self._paused = False
 
     def _is_deep_sleep(self) -> bool:
-        sleepy_val = self._emo.values.get("sleepy", 0)
-        if sleepy_val >= 0.7:
-            return True
-        # Match the visual: if sleepy face is showing, stop movement
-        return self._emo.dominant_emotion() == "sleepy"
+        try:
+            return self._fish.is_deeply_asleep()
+        except AttributeError:
+            sleepy_val = self._emo.values.get("sleepy", 0)
+            return sleepy_val >= 0.7 or self._emo.dominant_emotion() == "sleepy"
+
+    def _is_busy(self) -> bool:
+        """True when an animation sequence is playing (hobbies etc)."""
+        try:
+            return self._fish.animator.is_playing_sequence
+        except AttributeError:
+            return False
 
     def notify_stimulus(self, x: int, y: int):
         """Something interesting appeared at *(x, y)* — maybe dash over."""
-        if self._is_deep_sleep():
+        if self._is_deep_sleep() or self._is_busy():
             return
         if self._emo.values.get("curious", 0) > 0.15:
             self._target_x = float(x)
@@ -176,19 +183,19 @@ class MovementEngine:
 
     def force_wander(self):
         """Behaviour engine says 'go wander'."""
-        if self._is_deep_sleep():
+        if self._is_deep_sleep() or self._is_busy():
             return
         self._enter(MovementState.WANDER)
 
     def force_chase(self):
         """Behaviour engine says 'follow the cursor'."""
-        if self._is_deep_sleep():
+        if self._is_deep_sleep() or self._is_busy():
             return
         self._enter(MovementState.CHASE)
 
     def force_settle(self, x: float | None = None, y: float | None = None):
         """Walk to a specific edge spot, or auto-pick nearest."""
-        if self._is_deep_sleep():
+        if self._is_deep_sleep() or self._is_busy():
             return
         if x is not None and y is not None:
             self._target_x = x
@@ -211,11 +218,16 @@ class MovementEngine:
         self._state_time += dt
         self._cooldown = max(0.0, self._cooldown - dt)
 
-        # Sleep override — stop movement when sleepy is the dominant emotion.
-        # This matches the visual (sleepy face) so the fish doesn't appear to
-        # walk while looking asleep.
-        sleepy_val = self._emo.values.get("sleepy", 0)
-        if sleepy_val >= 0.7 or self._emo.dominant_emotion() == "sleepy":
+        # Animation sequence override — freeze movement during hobbies etc.
+        if self._is_busy():
+            if self._state != MovementState.IDLE:
+                self._enter(MovementState.IDLE)
+            self._vx = 0.0
+            self._vy = 0.0
+            return
+
+        # Sleep override — stop movement when fish is asleep.
+        if self._is_deep_sleep():
             if self._state != MovementState.IDLE:
                 self._enter(MovementState.IDLE)
             self._vx = 0.0
@@ -386,10 +398,10 @@ class MovementEngine:
         bounds = self._screen_rect()
         if not bounds:
             return
-        margin = 80
+        margin = 120
         fx, fy = self._fish_center()
         angle = random.uniform(0, 2 * math.pi)
-        dist = random.uniform(150, 400)
+        dist = random.uniform(100, 300)
         x = fx + math.cos(angle) * dist
         y = fy + math.sin(angle) * dist
         x = max(bounds.left() + margin, min(x, bounds.right() - margin))
@@ -595,23 +607,27 @@ class MovementEngine:
         nx = pos.x() + self._vx * dt
         ny = pos.y() + self._vy * dt
 
-        # Screen bounds with soft bounce
+        # Screen bounds — hard clamp (stop at edges, no bounce)
         bounds = self._screen_rect()
         if bounds:
             w = self._fish.width()
             h = self._fish.height()
-            m = 5
-            if nx < bounds.left() + m:
-                nx = float(bounds.left() + m)
-                self._vx *= -0.3
-            elif nx > bounds.right() - w - m:
-                nx = float(bounds.right() - w - m)
-                self._vx *= -0.3
-            if ny < bounds.top() + m:
-                ny = float(bounds.top() + m)
-                self._vy *= -0.3
-            elif ny > bounds.bottom() - h - m:
-                ny = float(bounds.bottom() - h - m)
-                self._vy *= -0.3
+            m = 10
+            left_lim = float(bounds.left() + m)
+            right_lim = float(bounds.right() - w - m)
+            top_lim = float(bounds.top() + m)
+            bot_lim = float(bounds.bottom() - h - m)
+            if nx < left_lim:
+                nx = left_lim
+                self._vx = 0.0
+            elif nx > right_lim:
+                nx = right_lim
+                self._vx = 0.0
+            if ny < top_lim:
+                ny = top_lim
+                self._vy = 0.0
+            elif ny > bot_lim:
+                ny = bot_lim
+                self._vy = 0.0
 
         self._fish.move(int(nx), int(ny))

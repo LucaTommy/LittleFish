@@ -1,14 +1,21 @@
 """
 Voice input for Little Fish.
-Records audio via sounddevice, transcribes via Groq Whisper API.
-Local faster-whisper support is optional — if not installed, uses Groq only.
-Includes: push-to-talk, always-on VAD mode, whisper/singing detection.
+Records audio via sounddevice, transcribes with multiple backends:
+  1. Vosk (local, fast, offline — primary)
+  2. faster-whisper (local, accurate — optional)
+  3. Groq Whisper API (cloud, very accurate — if keys available)
+  4. Google free STT (cloud, no key — last resort)
+Includes: push-to-talk, always-on VAD mode, whisper/singing detection,
+          conversation state machine (wake word → active listening window).
 """
 
 import io
+import json
+import time as _time
 import wave
 import tempfile
 import threading
+from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -21,10 +28,11 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
 MAX_RECORD_SECONDS = 15
-SILENCE_THRESHOLD = 500       # RMS below this = silence
-SILENCE_DURATION = 1.5        # seconds of silence to stop recording
-VAD_THRESHOLD = 800           # RMS above this = voice activity
-VAD_CONFIRM_CHUNKS = 3        # consecutive loud chunks to confirm speech
+SILENCE_THRESHOLD = 300       # RMS below this = silence
+SILENCE_DURATION = 1.0        # seconds of silence to stop recording
+VAD_THRESHOLD = 300           # RMS above this = voice activity
+VAD_CONFIRM_CHUNKS = 2        # consecutive loud chunks to confirm speech
+CONVERSATION_TIMEOUT = 10.0   # seconds of silence before leaving active mode
 
 
 # Sentiment word lists for compliment/insult/name detection
@@ -39,7 +47,48 @@ _INSULTS = frozenset({
     "annoying", "ugly", "hate you", "worst", "terrible",
     "idiot", "moron", "stop", "bad fish",
 })
-_NAME_TRIGGERS = ("little fish", "littlefish", "hey fish", "hi fish")
+_NAME_TRIGGERS = ("little fish", "littlefish", "hey fish", "hi fish",
+                  "pesciolino", "ciao fish")
+_WAKE_WORDS = ("hey little fish", "hey fish", "little fish",
+               "ciao little fish", "ciao fish", "ehi fish",
+               "ciao pesciolino", "ehi pesciolino",
+               "fish", "pesciolino")
+
+# Energy gate thresholds for _should_transcribe()
+MIN_ENERGY_RMS = 200          # skip audio quieter than this (silence/noise)
+MIN_AUDIO_SECS = 0.5          # skip audio shorter than this (accidental blip)
+
+# Known Whisper hallucination patterns (common ghost outputs on silence/noise)
+import re as _re
+_HALLUCINATION_RE = _re.compile(
+    r'^[\s.!?,;:"\'-…]*$'          # only punctuation / whitespace / ellipsis
+    r'|^.{0,2}$'                    # 1-2 chars (random junk)
+    r'|[\u2E80-\u9FFF]'             # CJK characters (e.g. 謝謝)
+    r'|[\u3040-\u30FF]'             # Japanese kana
+    r'|[\uAC00-\uD7AF]'             # Korean
+    r'|[\u0600-\u06FF]'             # Arabic
+    r'|[\u0400-\u04FF]{3,}'         # Cyrillic blocks
+    r'|^thank you for watching'
+    r'|^thanks for watching'
+    r'|please subscribe'
+    r'|sottotitoli'
+    r'|amara\.org'
+, _re.IGNORECASE)
+
+# Short single-word filter: if transcription is 1 word and <= 3 chars,
+# only allow it if it matches a known valid short utterance
+_VALID_SHORT_WORDS = frozenset({
+    "fish", "ciao", "hey", "hi", "yes", "no", "stop", "help",
+    "mute", "play", "game", "news", "joke", "hide", "come",
+    "mood", "rest", "sì", "ehi", "qui", "che", "dai",
+})
+
+
+class ConversationState(Enum):
+    PASSIVE = auto()            # Waiting for wake word
+    ACTIVE_LISTENING = auto()   # Listening for speech (no wake word needed)
+    PROCESSING = auto()         # Transcription/AI response in progress
+    SPEAKING = auto()           # TTS is playing
 
 
 class VoiceRecorder(QObject):
@@ -60,25 +109,49 @@ class VoiceRecorder(QObject):
     whisper_detected = pyqtSignal()
     singing_detected = pyqtSignal()
     mic_spike = pyqtSignal()
+    # Conversation state signals
+    conversation_started = pyqtSignal()   # PASSIVE → ACTIVE_LISTENING
+    conversation_ended = pyqtSignal()     # → PASSIVE
 
-    def __init__(self, config: dict, fish_name: str = ""):
+    def __init__(self, config: dict, fish_name: str = "", tts=None, groq_keys: list | None = None):
         super().__init__()
         self._config = config
         self._recording = False
-        self._groq_keys = config.get("groq_keys", [])
+        self._groq_keys = groq_keys if groq_keys is not None else config.get("groq_keys", [])
         self._groq_key_index = 0
         self._fish_name = fish_name.lower().strip() if fish_name else ""
+        self._tts_ref = tts  # reference to TTS for barge-in
 
         # VAD mode
         self._vad_enabled = config.get("voice", {}).get("always_listening", False)
         self._vad_running = False
         self._vad_thread: Optional[threading.Thread] = None
+        self._vad_stream = None   # live reference to the VAD InputStream
+        self._vad_prebuffer: list = []  # chunks buffered before voice confirmed
 
-        # Try to load faster-whisper for local transcription
+        # Conversation state machine
+        self._conv_state = ConversationState.PASSIVE
+        self._conv_last_activity = 0.0  # monotonic timestamp
+        self._manual_listen = False      # True when user clicks Listen button
+
+        # Local STT engines (try Vosk first, then faster-whisper)
+        self._vosk_recognizer = None
         self._whisper_model = None
-        whisper_mode = config.get("voice", {}).get("whisper_mode", "local")
-        if whisper_mode == "local":
+        self._try_load_vosk()
+        if self._vosk_recognizer is None:
             self._try_load_local_whisper()
+
+    def _try_load_vosk(self):
+        """Attempt to load Vosk for fast local STT. Auto-downloads model."""
+        try:
+            from vosk import Model, KaldiRecognizer, SetLogLevel
+            SetLogLevel(-1)  # suppress Vosk debug logs
+            # Vosk auto-downloads a small model on first use
+            model = Model(lang="en-us")
+            self._vosk_recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+            self._vosk_recognizer.SetWords(True)
+        except Exception:
+            self._vosk_recognizer = None
 
     def _try_load_local_whisper(self):
         """Attempt to load faster-whisper. Silently fails if not installed."""
@@ -97,12 +170,20 @@ class VoiceRecorder(QObject):
     # ------------------------------------------------------------------
 
     def start_listening(self):
-        """Start recording in a background thread."""
+        """Start recording in a background thread (manual Listen button)."""
         if self._recording:
             return
         self._recording = True
+        self._manual_listen = True
         self.listening_started.emit()
-        thread = threading.Thread(target=self._record_and_transcribe, daemon=True)
+        # Grab the VAD stream (if VAD is running) so we reuse it
+        # instead of opening a competing second InputStream.
+        stream_ref = self._vad_stream
+        thread = threading.Thread(
+            target=self._record_and_transcribe,
+            kwargs={"vad_stream": stream_ref},
+            daemon=True,
+        )
         thread.start()
 
     def stop_listening(self):
@@ -133,38 +214,143 @@ class VoiceRecorder(QObject):
     def vad_enabled(self) -> bool:
         return self._vad_enabled
 
+    # ------------------------------------------------------------------
+    # Conversation state machine
+    # ------------------------------------------------------------------
+
+    @property
+    def conversation_state(self) -> ConversationState:
+        return self._conv_state
+
+    def enter_conversation(self):
+        """Transition to ACTIVE_LISTENING (wake word detected externally or internally)."""
+        if self._conv_state == ConversationState.PASSIVE:
+            self._conv_state = ConversationState.ACTIVE_LISTENING
+            self._conv_last_activity = _time.monotonic()
+            self.conversation_started.emit()
+
+    def on_tts_started(self):
+        """Called when TTS begins playing."""
+        self._conv_state = ConversationState.SPEAKING
+        self._conv_last_activity = _time.monotonic()
+
+    def on_tts_finished(self):
+        """Called when TTS finishes — return to ACTIVE_LISTENING with timeout."""
+        if self._conv_state in (ConversationState.SPEAKING, ConversationState.PROCESSING):
+            self._conv_state = ConversationState.ACTIVE_LISTENING
+            self._conv_last_activity = _time.monotonic()
+            print("[CONV] Active window — listening for follow-up")
+            # Quick audio cue so user knows fish is listening
+            try:
+                import winsound
+                winsound.Beep(880, 80)
+            except Exception:
+                pass
+
+    def _check_conversation_timeout(self):
+        """Check if conversation should end due to silence timeout."""
+        if self._conv_state == ConversationState.ACTIVE_LISTENING:
+            if _time.monotonic() - self._conv_last_activity > CONVERSATION_TIMEOUT:
+                self._conv_state = ConversationState.PASSIVE
+                self.conversation_ended.emit()
+
     def _vad_loop(self):
         """Continuously monitor mic for voice activity."""
+        print("[VAD] VAD loop started")
         chunk_size = int(SAMPLE_RATE * 0.1)
         loud_count = 0
+        prebuffer = []  # rolling buffer of recent chunks for pre-buffering
+        PREBUFFER_CHUNKS = 5  # keep last ~500ms
+        prev_state = self._conv_state
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
                                 dtype=DTYPE, blocksize=chunk_size) as stream:
+                self._vad_stream = stream  # expose for manual listen reuse
                 while self._vad_running:
                     if self._recording:
-                        # Don't interfere with active push-to-talk
-                        import time as _t
-                        _t.sleep(0.5)
+                        prebuffer.clear()
+                        _time.sleep(0.5)
+                        prev_state = self._conv_state
                         continue
+
+                    self._check_conversation_timeout()
+
+                    # Detect transition out of SPEAKING — flush mic buffer
+                    cur_state = self._conv_state
+                    if prev_state == ConversationState.SPEAKING and cur_state != ConversationState.SPEAKING:
+                        # Discard 300ms of stale audio (TTS bleed / echo)
+                        flush_chunks = 3  # 3 × 100ms
+                        for _ in range(flush_chunks):
+                            stream.read(chunk_size)
+                        prebuffer.clear()
+                        loud_count = 0
+                        print(f"[VAD] Resuming listen at {_time.monotonic():.2f}")
+                    prev_state = cur_state
+
                     data, _ = stream.read(chunk_size)
                     rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
 
-                    # Mic spike detection (loud sudden noise)
+                    # During TTS playback, keep reading (stream alive) but
+                    # don't accumulate speaker audio into prebuffer
+                    if cur_state == ConversationState.SPEAKING:
+                        # Still check for barge-in
+                        if rms > VAD_THRESHOLD:
+                            loud_count += 1
+                            if loud_count >= VAD_CONFIRM_CHUNKS:
+                                loud_count = 0
+                                if self._tts_ref is not None:
+                                    print("[CONV] Barge-in — user interrupted TTS")
+                                    self._tts_ref.stop_playback()
+                                    _time.sleep(0.15)  # let audio fully stop
+                                # Flush after barge-in too
+                                for _ in range(2):
+                                    stream.read(chunk_size)
+                                prebuffer.clear()
+                                self._conv_state = ConversationState.ACTIVE_LISTENING
+                                prev_state = ConversationState.ACTIVE_LISTENING
+                                print(f"[VAD] Resuming listen at {_time.monotonic():.2f}")
+                        else:
+                            loud_count = max(0, loud_count - 1)
+                        continue
+
+                    # Keep a rolling pre-buffer of recent audio
+                    prebuffer.append(data.copy())
+                    if len(prebuffer) > PREBUFFER_CHUNKS:
+                        prebuffer.pop(0)
+
                     if rms > 3000:
                         self.mic_spike.emit()
 
                     if rms > VAD_THRESHOLD:
                         loud_count += 1
+                        print(f"[VAD] Speech detected at {_time.monotonic():.2f}")
                         if loud_count >= VAD_CONFIRM_CHUNKS:
-                            # Voice activity confirmed — record and transcribe
                             loud_count = 0
+
+                            # Save pre-buffered audio so recording starts with it
+                            self._vad_prebuffer = list(prebuffer)
+                            prebuffer.clear()
+
                             self._recording = True
                             self.listening_started.emit()
-                            self._record_and_transcribe()
+
+                            if self._conv_state == ConversationState.ACTIVE_LISTENING:
+                                self._conv_state = ConversationState.PROCESSING
+                                self._conv_last_activity = _time.monotonic()
+
+                            # Pass the existing VAD stream so we don't
+                            # open a second InputStream (which hangs on
+                            # some Windows audio drivers).
+                            self._record_and_transcribe(vad_stream=stream)
                             loud_count = 0
                     else:
                         loud_count = max(0, loud_count - 1)
-        except Exception:
+        except Exception as e:
+            print(f"[VAD] ERROR in vad_loop: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._vad_stream = None
             self._vad_running = False
 
     # ------------------------------------------------------------------
@@ -172,8 +358,14 @@ class VoiceRecorder(QObject):
     # ------------------------------------------------------------------
 
     def analyze_transcription(self, text: str):
-        """Check transcription for compliments, insults, name, whisper hints."""
+        """Check transcription for compliments, insults, name, whisper hints, wake words."""
         lower = text.lower().strip()
+
+        # Wake word detection → enter conversation mode
+        for wake in _WAKE_WORDS:
+            if wake in lower:
+                self.enter_conversation()
+                break
 
         # Name detection
         triggers = list(_NAME_TRIGGERS)
@@ -221,94 +413,223 @@ class VoiceRecorder(QObject):
     # Recording
     # ------------------------------------------------------------------
 
-    def _record_and_transcribe(self):
+    def _should_transcribe(self, audio_data: np.ndarray) -> bool:
+        """Return True only if audio contains real speech, not silence."""
+        rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
+        duration = len(audio_data) / SAMPLE_RATE
+
+        if rms < MIN_ENERGY_RMS:
+            print(f"[WHISPER] Skipped — too quiet (rms={rms:.0f})")
+            return False
+
+        if duration < MIN_AUDIO_SECS:
+            print(f"[WHISPER] Skipped — too short ({duration:.2f}s)")
+            return False
+
+        return True
+
+    def _record_and_transcribe(self, vad_stream=None):
         try:
-            audio_data = self._record_audio()
-            if audio_data is None or len(audio_data) < SAMPLE_RATE * 0.3:
+            audio_data = self._record_audio(existing_stream=vad_stream)
+            if audio_data is None:
                 self.listening_stopped.emit()
                 self._recording = False
                 return
 
             self.listening_stopped.emit()
 
+            # Energy gate — only send real speech to Whisper
+            if not self._should_transcribe(audio_data):
+                self._recording = False
+                return
+
+            rms = float(np.sqrt(np.mean(audio_data.astype(np.float32) ** 2)))
+            dur = len(audio_data) / SAMPLE_RATE
+            print(f"[WHISPER] Sending audio, duration: {dur:.2f}s, energy: {rms:.4f}")
+
             # Analyze audio characteristics before transcription
             self.analyze_audio_characteristics(audio_data)
 
+            # Mark as processing
+            if self._conv_state in (ConversationState.ACTIVE_LISTENING,
+                                     ConversationState.PROCESSING):
+                self._conv_state = ConversationState.PROCESSING
+
             text = self._transcribe(audio_data)
             self._recording = False
+            print(f"[STT] Raw transcription: {text!r}")
 
             if text and text.strip():
                 clean = text.strip()
-                # Analyze content for sentiment/name
+
+                # Filter Whisper hallucinations (regex patterns)
+                if _HALLUCINATION_RE.search(clean):
+                    print(f"[STT] Filtered hallucination: {clean!r}")
+                    self._manual_listen = False
+                    return
+
+                # Filter single short words (<=3 chars) that aren't valid commands
+                words = clean.split()
+                if len(words) == 1:
+                    word_clean = words[0].strip('.,!?…').lower()
+                    if len(word_clean) <= 3 and word_clean not in _VALID_SHORT_WORDS:
+                        print(f"[STT] Filtered short word: {clean!r}")
+                        self._manual_listen = False
+                        return
+
+                print(f"[STT] Accepted: {clean!r}")
+                self._conv_last_activity = _time.monotonic()
+                # Analyze content for sentiment/name/wake words
                 self.analyze_transcription(clean)
                 self.transcription_ready.emit(clean)
+            else:
+                print("[STT] Empty transcription — all backends returned nothing")
+
+            self._manual_listen = False
 
         except Exception as e:
+            import traceback
+            print(f"[VAD] Exception in _record_and_transcribe: {e}")
+            traceback.print_exc()
             self._recording = False
             self.listening_stopped.emit()
             self.error_occurred.emit(str(e))
 
-    def _record_audio(self) -> Optional[np.ndarray]:
-        """Record until silence or max duration."""
-        chunks = []
+    def _record_audio(self, existing_stream=None) -> Optional[np.ndarray]:
+        """Record until silence or max duration, prepending any VAD pre-buffer.
+
+        If *existing_stream* is supplied (from the VAD loop) we read from
+        it directly instead of opening a second sd.InputStream — opening
+        two InputStreams on the same device hangs on many Windows drivers.
+        """
+        chunks = list(self._vad_prebuffer)  # start with pre-buffered audio
+        self._vad_prebuffer.clear()
         silence_samples = 0
         max_samples = int(MAX_RECORD_SECONDS * SAMPLE_RATE)
-        total_samples = 0
+        total_samples = sum(len(c) for c in chunks)
         chunk_size = int(SAMPLE_RATE * 0.1)  # 100ms chunks
+        silence_dur = SILENCE_DURATION
 
         try:
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                                dtype=DTYPE, blocksize=chunk_size) as stream:
-                while self._recording and total_samples < max_samples:
-                    data, _ = stream.read(chunk_size)
-                    chunks.append(data.copy())
-                    total_samples += len(data)
-
-                    rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
-                    if rms < SILENCE_THRESHOLD:
-                        silence_samples += len(data)
-                        if silence_samples > SAMPLE_RATE * SILENCE_DURATION:
-                            break
-                    else:
-                        silence_samples = 0
+            if existing_stream is not None:
+                # Reuse the VAD loop's already-open stream
+                self._read_until_silence(existing_stream, chunks, chunk_size,
+                                         silence_dur, max_samples, total_samples)
+            else:
+                # Manual listen — open our own stream
+                with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                                    dtype=DTYPE, blocksize=chunk_size) as stream:
+                    self._read_until_silence(stream, chunks, chunk_size,
+                                             silence_dur, max_samples, total_samples)
         except Exception as e:
+            print(f"[REC] Mic error: {e}")
             self.error_occurred.emit(f"Mic error: {e}")
             return None
 
         if not chunks:
             return None
-        return np.concatenate(chunks)
+        audio = np.concatenate(chunks)
+        print(f"[REC] Recorded {len(audio)/SAMPLE_RATE:.2f}s, "
+              f"RMS={float(np.sqrt(np.mean(audio.astype(np.float32)**2))):.0f}")
+        return audio
+
+    def _read_until_silence(self, stream, chunks, chunk_size,
+                            silence_dur, max_samples, total_samples):
+        """Read from *stream* appending to *chunks* until silence or max."""
+        silence_samples = 0
+        while self._recording and total_samples < max_samples:
+            data, _ = stream.read(chunk_size)
+            chunks.append(data.copy())
+            total_samples += len(data)
+
+            rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
+            if rms < SILENCE_THRESHOLD:
+                silence_samples += len(data)
+                if silence_samples > SAMPLE_RATE * silence_dur:
+                    break
+            else:
+                silence_samples = 0
 
     # ------------------------------------------------------------------
     # Transcription
     # ------------------------------------------------------------------
 
     def _transcribe(self, audio: np.ndarray) -> str:
-        """Transcribe audio — local whisper first, Groq API fallback."""
-        # Try local first
+        """Transcribe audio — Vosk → local whisper → Groq API → Google free STT.
+        Vosk is English-only, so skip it unless language is explicitly 'en'.
+        """
+        voice_lang = self._config.get("voice", {}).get("voice_language", "auto")
+        print(f"[STT] Starting transcription (lang={voice_lang}, audio={len(audio)/SAMPLE_RATE:.1f}s)")
+
+        # Vosk only for explicit English — it mangles Italian into English gibberish
+        if voice_lang == "en" and self._vosk_recognizer is not None:
+            try:
+                result = self._transcribe_vosk(audio)
+                print(f"[STT] Vosk result: {result!r}")
+                return result
+            except Exception as e:
+                print(f"[STT] Vosk failed: {e}")
+
+        # Try local faster-whisper
         if self._whisper_model is not None:
             try:
-                return self._transcribe_local(audio)
-            except Exception:
-                pass
+                result = self._transcribe_local(audio)
+                print(f"[STT] Local whisper result: {result!r}")
+                return result
+            except Exception as e:
+                print(f"[STT] Local whisper failed: {e}")
 
-        # Groq API fallback
+        # Groq Whisper (supports Italian + English, language-aware)
         if self._groq_keys:
             try:
-                return self._transcribe_groq(audio)
-            except Exception:
-                pass
+                result = self._transcribe_groq(audio)
+                print(f"[STT] Groq result: {result!r}")
+                return result
+            except Exception as e:
+                print(f"[STT] Groq failed: {e}")
+        else:
+            print("[STT] No Groq keys available!")
 
-        self.error_occurred.emit("No transcription method available. Add Groq API keys or install faster-whisper.")
+        # Vosk fallback for "auto" — better than nothing if cloud fails
+        if voice_lang == "auto" and self._vosk_recognizer is not None:
+            try:
+                result = self._transcribe_vosk(audio)
+                print(f"[STT] Vosk fallback result: {result!r}")
+                return result
+            except Exception as e:
+                print(f"[STT] Vosk fallback failed: {e}")
+
+        # Google free STT fallback (no API key needed)
+        try:
+            result = self._transcribe_google(audio)
+            print(f"[STT] Google result: {result!r}")
+            return result
+        except Exception as e:
+            print(f"[STT] Google failed: {e}")
+
+        self.error_occurred.emit("No transcription method available. Check your microphone or internet connection.")
         return ""
+
+    def _transcribe_vosk(self, audio: np.ndarray) -> str:
+        """Transcribe using Vosk (fast, local, offline)."""
+        self._vosk_recognizer.Reset()
+        # Feed audio in chunks for Vosk
+        raw = audio.tobytes()
+        chunk_size = 4000
+        for i in range(0, len(raw), chunk_size):
+            self._vosk_recognizer.AcceptWaveform(raw[i:i + chunk_size])
+        result = json.loads(self._vosk_recognizer.FinalResult())
+        text = result.get("text", "").strip()
+        if not text:
+            raise ValueError("Vosk returned empty text")
+        return text
 
     def _transcribe_local(self, audio: np.ndarray) -> str:
         """Transcribe using local faster-whisper."""
-        # Write to temp wav file
         wav_path = self._audio_to_wav_path(audio)
         try:
             segments, _ = self._whisper_model.transcribe(
-                str(wav_path), beam_size=1, language="en",
+                str(wav_path), beam_size=1,
             )
             return " ".join(seg.text for seg in segments).strip()
         finally:
@@ -321,6 +642,10 @@ class VoiceRecorder(QObject):
         wav_bytes = self._audio_to_wav_bytes(audio)
         last_error = None
 
+        # Resolve language preference from settings
+        voice_lang = self._config.get("voice", {}).get("voice_language", "auto")
+        whisper_lang = None if voice_lang == "auto" else voice_lang
+
         for _ in range(len(self._groq_keys)):
             key = self._groq_keys[self._groq_key_index]
             try:
@@ -328,16 +653,39 @@ class VoiceRecorder(QObject):
                 transcription = client.audio.transcriptions.create(
                     file=("audio.wav", wav_bytes),
                     model="whisper-large-v3",
-                    response_format="text",
-                    language="en",
+                    language=whisper_lang,
+                    prompt="Little Fish, companion, ciao, come stai, cosa fai, grazie, prego, capito, bene, sì, no, VSCode, Python",
+                    temperature=0.0,
+                    response_format="json",
                 )
-                return str(transcription).strip()
+                text = transcription.text.strip()
+                print(f"[STT] Groq Whisper: {text!r}")
+                if not text:
+                    raise ValueError("Groq returned empty text")
+                return text
             except Exception as e:
+                print(f"[STT] Groq key {self._groq_key_index} failed: {e}")
                 last_error = e
-                # Rotate to next key
                 self._groq_key_index = (self._groq_key_index + 1) % len(self._groq_keys)
 
         raise last_error or RuntimeError("All Groq keys exhausted")
+
+    def _transcribe_google(self, audio: np.ndarray) -> str:
+        """Transcribe using Google free Speech Recognition (no API key).
+        Single request with auto-detect for speed.
+        """
+        import speech_recognition as sr
+
+        recognizer = sr.Recognizer()
+        raw_pcm = audio.tobytes()
+        audio_data = sr.AudioData(raw_pcm, SAMPLE_RATE, 2)  # 2 bytes (int16)
+
+        try:
+            return recognizer.recognize_google(audio_data)
+        except sr.UnknownValueError:
+            return ""
+        except sr.RequestError as e:
+            raise RuntimeError(f"Google STT request failed: {e}")
 
     # ------------------------------------------------------------------
     # Audio helpers

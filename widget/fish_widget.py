@@ -18,11 +18,14 @@ from PyQt6.QtWidgets import (
 )
 
 from widget.animator import Animator, ReactionType
-from widget.renderer import FishRenderer, PIXEL_CANVAS, PIXEL_BODY
+from widget.renderer import (
+    FishRenderer, HobbySceneRenderer, GamingScene, GardeningScene,
+    JournalingScene, PianoScene, PIXEL_CANVAS, PIXEL_BODY,
+)
 from core.emotion_engine import EmotionEngine
 from core.system_monitor import SystemMonitor
 from core.personality import load_personality
-from core.voice import VoiceRecorder
+from core.voice import VoiceRecorder, ConversationState
 from core.command_parser import CommandParser
 from core.tts import TTS
 from core.chat import FishChat
@@ -45,6 +48,7 @@ from core.movement_engine import MovementEngine, MovementState
 FRAME_INTERVAL_MS = 16             # ~60fps
 EDGE_RESISTANCE_MARGIN = 40
 EDGE_RESISTANCE_STRENGTH = 0.55
+DEBUG_SLEEP = False                 # Set True to log sleep guard blocks
 
 from config import CONFIG_PATH, get_groq_keys
 
@@ -95,6 +99,16 @@ class FishWidget(QWidget):
         # --- Core objects ---
         self.animator = Animator()
         self.renderer = FishRenderer()
+        self._hobby_scene = HobbySceneRenderer()
+        self._gaming_scene = GamingScene()
+        self._gardening_scene = GardeningScene()
+        self._journaling_scene = JournalingScene()
+        self._piano_scene = PianoScene()
+        self._active_scene = None  # points to whichever scene is active
+        self._scene_extra_left = 0
+        self._scene_extra_right = 0
+        self._scene_extra_bottom = 0
+        self._was_playing_sequence = False  # track sequence end
 
         # --- User profile & Relationship ---
         self._user_profile = UserProfile()
@@ -112,7 +126,7 @@ class FishWidget(QWidget):
 
         # --- Voice / Commands / TTS ---
         groq_keys = get_groq_keys()
-        self._voice = VoiceRecorder(self._config, fish_name=self._user_profile.fish_name)
+        self._voice = VoiceRecorder(self._config, fish_name=self._user_profile.fish_name, groq_keys=groq_keys)
         self._voice.transcription_ready.connect(self._on_transcription)
         self._voice.listening_started.connect(self._on_listening_started)
         self._voice.listening_stopped.connect(self._on_listening_stopped)
@@ -123,9 +137,12 @@ class FishWidget(QWidget):
         self._voice.whisper_detected.connect(self._on_whisper)
         self._voice.singing_detected.connect(self._on_singing)
         self._voice.mic_spike.connect(self._on_mic_spike)
+        self._voice.conversation_started.connect(self._on_conversation_started)
+        self._voice.conversation_ended.connect(self._on_conversation_ended)
 
         self._cmd_parser = CommandParser(groq_keys=groq_keys, fish_name=self._user_profile.fish_name)
         self._tts = TTS(self._config)
+        self._voice._tts_ref = self._tts  # for barge-in support
 
         self._chat = FishChat(
             groq_keys,
@@ -146,8 +163,12 @@ class FishWidget(QWidget):
         self._bubble = ChatBubble()
 
         # Start VAD if enabled
-        if self._config.get("voice", {}).get("always_listening", False):
+        _al = self._config.get("voice", {}).get("always_listening", False)
+
+        if _al:
             self._voice.start_vad()
+        else:
+            print("[FISH] WARNING: always_listening is False — VAD not started!")
 
         self._voice_enabled = self._config.get("permissions", {}).get("microphone", True)
 
@@ -299,6 +320,9 @@ class FishWidget(QWidget):
         # --- Movement engine (emotion-driven autonomous movement) ---
         self._movement = MovementEngine(self, self.emotions)
 
+        # --- Hook animator step callback for hobby scenes ---
+        self.animator.on_step_executed = self._on_anim_step
+
         # --- Timing ---
         self._last_frame_time = time.monotonic()
 
@@ -431,6 +455,11 @@ class FishWidget(QWidget):
         auto_beh = intelligence.get("autonomous_behavior", True)
         self._behavior_engine.set_enabled(auto_beh)
 
+        # TTS voice settings
+        voice_cfg = self._config.get("voice", {})
+        self._tts.set_voice("en", voice_cfg.get("edge_voice_en", "en-US-AriaNeural"))
+        self._tts.set_voice("it", voice_cfg.get("edge_voice_it", "it-IT-ElsaNeural"))
+
     def _apply_window_flags(self):
         on_top = self._config.get("appearance", {}).get("always_on_top", True)
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -446,6 +475,17 @@ class FishWidget(QWidget):
         self.setFixedSize(side, side)
 
     # ------------------------------------------------------------------
+    # Authoritative sleep check — the ONE place all systems should use
+    # ------------------------------------------------------------------
+
+    def is_deeply_asleep(self) -> bool:
+        """Single source of truth for 'is the fish sleeping?'.
+        Returns True when sleepy >= 0.7 OR sleepy is the dominant emotion.
+        """
+        sleepy = self.emotions.values.get("sleepy", 0)
+        return sleepy >= 0.7 or self.emotions.dominant_emotion() == "sleepy"
+
+    # ------------------------------------------------------------------
     # Render loop
     # ------------------------------------------------------------------
 
@@ -457,7 +497,9 @@ class FishWidget(QWidget):
         # Emotion tick
         self.emotions.update(dt)
         face = self.emotions.dominant_emotion()
-        self.animator.set_face(face)
+        # Don't override face while an animation sequence is controlling it
+        if not self.animator.is_playing_sequence:
+            self.animator.set_face(face)
 
         # Eye tracking — smooth analog cursor tracking
         cursor_pos = QCursor.pos()
@@ -471,8 +513,13 @@ class FishWidget(QWidget):
         self._gaze_x += (target_gx - self._gaze_x) * 0.12
         self._gaze_y += (target_gy - self._gaze_y) * 0.12
         # Combine cursor gaze with idle look-around from animator
-        final_gx = max(-1.0, min(1.0, self._gaze_x + self.animator.idle_gaze_x))
-        final_gy = max(-1.0, min(1.0, self._gaze_y + self.animator.idle_gaze_y))
+        # Override gaze to look at scene prop during hobby scene
+        if self._active_scene and self._active_scene.is_active:
+            final_gx = self.animator.idle_gaze_x
+            final_gy = self.animator.idle_gaze_y
+        else:
+            final_gx = max(-1.0, min(1.0, self._gaze_x + self.animator.idle_gaze_x))
+            final_gy = max(-1.0, min(1.0, self._gaze_y + self.animator.idle_gaze_y))
         self.renderer.set_gaze(final_gx, final_gy)
 
         # VS Code quiet mode timeout
@@ -483,8 +530,14 @@ class FishWidget(QWidget):
         self.renderer.set_talking(self._tts.is_speaking)
         if self._tts.is_speaking and not self._talk_timer.isActive():
             self._talk_timer.start()
+            # Notify voice of TTS state for conversation flow
+            if self._voice.conversation_state != ConversationState.PASSIVE:
+                self._voice.on_tts_started()
         elif not self._tts.is_speaking and self._talk_timer.isActive():
             self._talk_timer.stop()
+            # TTS finished — return to active listening if in conversation
+            if self._voice.conversation_state == ConversationState.SPEAKING:
+                self._voice.on_tts_finished()
 
         # Emotion-driven movement (skip during drag, momentum, forced walk)
         if (not self._is_dragging
@@ -497,6 +550,18 @@ class FishWidget(QWidget):
                 self._on_movement_state_changed(prev_ms, new_ms)
 
         self.animator.update(dt)
+
+        # Update hobby scene and detect sequence end
+        if self._active_scene and self._active_scene.is_visible:
+            self._active_scene.update(dt)
+            if not self._active_scene.is_visible:
+                self._shrink_from_scene()
+        if self._was_playing_sequence and not self.animator.is_playing_sequence:
+            # Sequence just ended naturally
+            if self._active_scene and self._active_scene.is_active:
+                self._active_scene.stop()
+        self._was_playing_sequence = self.animator.is_playing_sequence
+
         self.update()  # schedules paintEvent
 
         # Keep chat bubble anchored to the fish
@@ -520,17 +585,31 @@ class FishWidget(QWidget):
         painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
+        # Compute fish center (adjusted when hobby scene expands widget)
+        xl = self._scene_extra_left
+        xr = self._scene_extra_right
+        xb = self._scene_extra_bottom
+        fish_cx = xl + (self.width() - xl - xr) / 2.0
+        fish_cy = (self.height() - xb) / 2.0
+
+        # Draw hobby scene BEHIND the fish
+        if self._active_scene and self._active_scene.is_visible:
+            self._active_scene.render(painter, fish_cx, fish_cy,
+                                      self._display_size)
+
         # Get pixel-art pixmap at internal resolution
         seasonal = self.emotions.get_seasonal_event()
+        # Apply hobby mood tint and suppress internal prop during scene
+        self.renderer._hobby_tint = self._active_scene.get_tint() if self._active_scene else None
+        self.renderer._suppress_prop = bool(self._active_scene and self._active_scene.is_visible)
         pixmap = self.renderer.render_pixmap(self.animator, seasonal_event=seasonal)
 
         # Nearest-neighbor scaling — crisp pixel art
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
 
         # Apply transforms: breathing, reactions, then scale to display
-        center = self.width() / 2.0
-        painter.translate(center + self.animator.offset_x,
-                          center + self.animator.offset_y)
+        painter.translate(fish_cx + self.animator.offset_x,
+                          fish_cy + self.animator.offset_y)
         painter.rotate(self.animator.rotation)
         scale = self.animator.scale * self._display_scale
         painter.scale(scale, scale)
@@ -569,6 +648,9 @@ class FishWidget(QWidget):
             self._is_dragging = True
             self._was_dragged = False
             self._stop_walk()  # Cancel any walk animation on drag
+            self.animator.stop_sequence()  # Cancel any playing animation
+            if self._active_scene and self._active_scene.is_active:
+                self._active_scene.interrupt()
             self._movement.pause(999.0)  # Pause movement engine during drag
             self.animator.is_dragging = True
             self.animator.queue_reaction(ReactionType.FLINCH)
@@ -744,6 +826,12 @@ class FishWidget(QWidget):
 
     def _walk_to(self, x: int, y: int, speed: float = 600.0):
         """Smoothly walk to (x, y) instead of teleporting, clamped to screen."""
+        if self.animator.is_playing_sequence:
+            return
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print("[SLEEP] Blocked _walk_to — fish is asleep")
+            return
         self._movement.pause(30.0)  # Yield to forced walk
         # Clamp target to screen bounds to prevent walking off-screen
         screen = self.screen()
@@ -760,6 +848,13 @@ class FishWidget(QWidget):
     def _tick_walk(self):
         """Animate smooth walking toward target position."""
         if self._walk_target_x is None or self._walk_target_y is None:
+            self._walk_timer.stop()
+            return
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print("[SLEEP] Blocked _tick_walk — fish is asleep")
+            self._walk_target_x = None
+            self._walk_target_y = None
             self._walk_timer.stop()
             return
         pos = self.pos()
@@ -789,6 +884,14 @@ class FishWidget(QWidget):
     def _tick_momentum(self):
         """Animate momentum after a flick release."""
         if abs(self._momentum_vx) < 5 and abs(self._momentum_vy) < 5:
+            self._momentum_timer.stop()
+            self._movement.resume()
+            return
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print("[SLEEP] Blocked _tick_momentum — fish is asleep")
+            self._momentum_vx = 0.0
+            self._momentum_vy = 0.0
             self._momentum_timer.stop()
             self._movement.resume()
             return
@@ -1026,19 +1129,39 @@ class FishWidget(QWidget):
         self._last_interaction_time = time.monotonic()
         self._behavior_engine.record_interaction()
 
-        # Show transcription in chat window if open
-        if self._chat_window is not None and self._chat_window.isVisible():
-            self._chat_window._add_user_message(text)
+        # Strip wake words from the text so commands/chat get clean input
+        clean_text = text
+        for wake in ("hey little fish", "ciao little fish", "ciao fish",
+                     "ehi fish", "ciao pesciolino", "ehi pesciolino",
+                     "little fish", "hey fish", "fish", "pesciolino"):
+            lower = clean_text.lower()
+            idx = lower.find(wake)
+            if idx != -1:
+                clean_text = (clean_text[:idx] + clean_text[idx + len(wake):]).strip(" ,.")
+        if not clean_text:
+            # Just a wake word with nothing else — already handled by conversation_started
+            return
+
+        # Any speech picked up → enter conversation so mic stays open after reply
+        from core.voice import ConversationState
+        if self._voice.conversation_state == ConversationState.PASSIVE:
+            self._voice.enter_conversation()
+
+        # Always show transcription in chat (even if chat window is closed)
+        if self._chat_window is None:
+            from widget.chat_window import ChatWindow
+            self._chat_window = ChatWindow(self._chat, self)
+        self._chat_window._add_user_message(clean_text)
 
         try:
-            result = self._cmd_parser.parse(text)
+            result = self._cmd_parser.parse(clean_text)
         except Exception:
             self._say("Something went wrong parsing that.")
             return
 
         # No command matched — fall back to AI conversation
         if result is None:
-            self._chat.send(text)
+            self._chat.send(clean_text)
             self.emotions.spike("curious", 0.15)
             return
 
@@ -1272,12 +1395,14 @@ class FishWidget(QWidget):
     def _get_chat_context(self) -> dict:
         """Return live context dict for the AI system prompt."""
         import datetime
+        from core.system_monitor import _get_active_window_title
         elapsed = time.monotonic() - self._session_start
         return {
             "hour": datetime.datetime.now().hour,
             "session_hours": int(elapsed // 3600),
             "session_mins": int((elapsed % 3600) // 60),
             "active_app": getattr(self._behavior_engine, '_active_app', ''),
+            "window_title": _get_active_window_title() or '',
             "energy": self.emotions._energy,
             "dominant": self.emotions.dominant_emotion(),
         }
@@ -1565,6 +1690,10 @@ class FishWidget(QWidget):
 
     def _posture_reminder(self):
         """Auto-triggered every 2 hours to remind user to stretch."""
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print("[SLEEP] Blocked _posture_reminder — fish is asleep")
+            return
         self._say("You've been sitting for 2 hours! Time to stretch and take a break.")
         self._tts.say("Hey! You've been sitting for a while. Stand up and stretch!")
         self.emotions.spike("worried", 0.2)
@@ -1757,8 +1886,9 @@ class FishWidget(QWidget):
         self._behavior_engine.record_interaction()
 
         # When sleeping, only allow wake_up — no talking, moving, or animations
-        is_sleepy = self.emotions.dominant_emotion() == "sleepy"
-        if is_sleepy and action != "wake_up":
+        if self.is_deeply_asleep() and action != "wake_up":
+            if DEBUG_SLEEP:
+                print(f"[SLEEP] Blocked _on_behavior({action}) — fish is asleep")
             return
 
         # When user is actively chatting, suppress speech behaviors
@@ -1903,22 +2033,125 @@ class FishWidget(QWidget):
         # Don't interrupt an already playing sequence
         if self.animator.is_playing_sequence:
             return
-        # Don't play if dragging or talking
+        # Don't play during drag, speech, walk, sleep, or active chat
         if self._is_dragging or self._tts.is_speaking:
             return
+        if self._walk_timer.isActive():
+            return
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print(f"[SLEEP] Blocked _play_animation_sequence({anim_name}) — fish is asleep")
+            return
+        if self._is_user_chatting:
+            return
         self.animator.play_sequence(seq)
+
+        # Start hobby scene for hobbies with visual scenes
+        ds = self._display_size
+        if anim_name == "painting":
+            self._start_hobby_scene(self._hobby_scene,
+                extra_left=int(ds * 1.5), extra_bottom=int(ds * 0.4))
+        elif anim_name == "gaming":
+            self._start_hobby_scene(self._gaming_scene,
+                extra_right=int(ds * 1.5), extra_bottom=int(ds * 0.5))
+        elif anim_name == "gardening":
+            self._start_hobby_scene(self._gardening_scene,
+                extra_left=int(ds * 0.5), extra_bottom=80)
+        elif anim_name == "journaling":
+            self._start_hobby_scene(self._journaling_scene,
+                extra_left=int(ds * 1.2), extra_bottom=int(ds * 0.3))
+        elif anim_name == "piano":
+            self._start_hobby_scene(self._piano_scene,
+                extra_left=int(ds * 2.0), extra_bottom=int(ds * 0.3))
+
+    # ------------------------------------------------------------------
+    # Hobby scene management
+    # ------------------------------------------------------------------
+
+    def _start_hobby_scene(self, scene, extra_left=0, extra_right=0, extra_bottom=0):
+        """Expand widget and start a hobby scene."""
+        scene.start()
+        self._active_scene = scene
+        self._scene_extra_left = extra_left
+        self._scene_extra_right = extra_right
+        self._scene_extra_bottom = extra_bottom
+        old_w, old_h = self.width(), self.height()
+        self.setFixedSize(old_w + extra_left + extra_right,
+                          old_h + extra_bottom)
+        if extra_left > 0:
+            self.move(self.x() - extra_left, self.y())
+
+    def _shrink_from_scene(self):
+        """Restore widget to normal size after scene fade completes."""
+        xl = self._scene_extra_left
+        xr = self._scene_extra_right
+        xb = self._scene_extra_bottom
+        if xl == 0 and xr == 0 and xb == 0:
+            return
+        self._scene_extra_left = 0
+        self._scene_extra_right = 0
+        self._scene_extra_bottom = 0
+        self._active_scene = None
+        if xl > 0:
+            self.move(self.x() + xl, self.y())
+        self._apply_widget_size()
+
+    def _on_anim_step(self, step, seq_name):
+        """Called on every animation sequence step execution."""
+        if not self._active_scene or not self._active_scene.is_active:
+            return
+        if seq_name == "painting":
+            if step.offset_x != 0.0:
+                self._hobby_scene.add_brush_stroke()
+            if step.face:
+                self._hobby_scene.set_face(step.face)
+        elif seq_name == "gaming":
+            if step.offset_x != 0.0:
+                self._gaming_scene.add_button_press()
+            if step.face:
+                self._gaming_scene.set_face(step.face)
+        elif seq_name == "gardening":
+            if step.offset_y != 0.0:
+                self._gardening_scene.add_growth_stage()
+            if step.offset_x != 0.0:
+                self._gardening_scene.add_growth_stage()
+            if step.particle == "rain":
+                self._gardening_scene.show_watering()
+                self._gardening_scene.add_growth_stage()
+            if step.particle == "leaf":
+                self._gardening_scene.add_growth_stage()
+            if step.face:
+                self._gardening_scene.set_face(step.face)
+        elif seq_name == "journaling":
+            if step.offset_x != 0.0:
+                self._journaling_scene.add_writing_line()
+            if step.look_dir and step.look_dir[1] < 0:
+                self._journaling_scene.set_looking_up(True)
+            elif step.look_dir and step.look_dir[1] >= 0:
+                self._journaling_scene.set_looking_up(False)
+            if step.face:
+                self._journaling_scene.set_face(step.face)
+        elif seq_name == "piano":
+            if step.offset_x != 0.0:
+                key_index = int((step.offset_x + 0.3) / 0.6 * 9)
+                self._piano_scene.press_key(max(0, min(9, key_index)))
+            if step.face:
+                self._piano_scene.set_face(step.face)
 
     def _idle_behavior(self):
         """Rich idle behaviors — ambient life + active idle + deep idle."""
         import random
         if self._is_dragging or self._tts.is_speaking or self._voice.is_recording:
             return
+        # Don't do idle behaviors during active voice conversation
+        if self._voice.conversation_state != ConversationState.PASSIVE:
+            return
         # Don't override animation library sequences
         if self.animator.is_playing_sequence:
             return
 
         # Sleepy behavior — truly asleep, minimal activity
-        if self.emotions.dominant_emotion() == "sleepy":
+        if self.is_deeply_asleep():
             r = random.random()
             if r < 0.15:
                 self.animator.trigger_slow_blink()
@@ -2016,10 +2249,19 @@ class FishWidget(QWidget):
     def _on_listening_started(self):
         self.emotions.on_mic_active()
         self.animator.set_face("curious")
-        self._say("I'm listening...")
+        # Only show bubble on the FIRST detection (PASSIVE → listening),
+        # not when already in an active conversation
+        if self._voice.conversation_state == ConversationState.PASSIVE:
+            # Cooldown: don't spam "I'm listening..." if VAD triggers repeatedly
+            now = time.monotonic()
+            if now - getattr(self, '_last_listening_msg', 0) > 5.0:
+                self._last_listening_msg = now
+                self._say("I'm listening...")
 
     def _on_listening_stopped(self):
-        self._bubble.dismiss()
+        # Only dismiss bubble if not in active conversation
+        if self._voice.conversation_state == ConversationState.PASSIVE:
+            self._bubble.dismiss()
 
     def _on_voice_error(self, msg: str):
         print(f"[Voice Error] {msg}")
@@ -2046,7 +2288,9 @@ class FishWidget(QWidget):
         self.emotions.on_name_called()
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self.animator.spawn_particle("exclamation")
-        self._say("You called?")
+        # If not already in conversation, say "You called?"
+        if self._voice.conversation_state == ConversationState.PASSIVE:
+            self._say("You called?")
 
     def _on_whisper(self):
         self.emotions.on_whisper_detected()
@@ -2061,6 +2305,19 @@ class FishWidget(QWidget):
     def _on_mic_spike(self):
         self.animator.queue_reaction(ReactionType.FLINCH)
         self.animator.trigger_look_around()
+
+    def _on_conversation_started(self):
+        """Wake word detected — enter active conversation mode."""
+        # Cancel any playing animation
+        if self.animator.is_playing_sequence:
+            self.animator.stop_sequence()
+        self.animator.set_face("curious")
+        self.emotions.spike("curious", 0.3)
+
+    def _on_conversation_ended(self):
+        """Conversation timed out — return to normal."""
+        self._bubble.dismiss()
+        self.animator.set_face("")
 
     def _toggle_listening(self):
         """Push-to-talk toggle — triggered by hotkey or context menu."""
@@ -2080,11 +2337,17 @@ class FishWidget(QWidget):
         """Fish spontaneously says something — the soul of the pet."""
         import random
         # Don't talk while sleeping
-        if self.emotions.dominant_emotion() == "sleepy":
+        if self.is_deeply_asleep():
+            if DEBUG_SLEEP:
+                print("[SLEEP] Blocked _unprompted_thought — fish is asleep")
             self._reschedule_unprompted()
             return
         # Don't interrupt active chat conversation
         if self._is_user_chatting:
+            self._reschedule_unprompted()
+            return
+        # Don't interrupt active voice conversation
+        if self._voice.conversation_state != ConversationState.PASSIVE:
             self._reschedule_unprompted()
             return
         # Don't interrupt if busy
@@ -2287,71 +2550,55 @@ class FishWidget(QWidget):
 
         # Nice display names for animation keys
         _DISPLAY_NAMES = {
+            # Daily life
             "coffee_sip": "Sip Coffee",
-            "yawn_stretch": "Yawn & Stretch",
             "eat_snack": "Eat a Snack",
             "read_book": "Read a Book",
-            "nap_blanket": "Nap with Blanket",
-            "brush_teeth": "Brush Teeth",
-            "morning_routine": "Morning Routine",
             "big_stretch": "Big Stretch",
-            "monday_drama": "Monday Drama",
+            "nap_blanket": "Nap with Blanket",
+            # Emotional
+            "blush": "Blush",
+            "proud_puff": "Proud Puff",
+            "contemplate": "Contemplate",
+            "excited_wiggle": "Excited Wiggle",
+            "sulk": "Sulk",
+            # Activity
+            "little_dance": "Little Dance",
+            "head_bob": "Head Bob to Music",
+            "deep_focus": "Deep Focus",
+            "lift_weights": "Lift Weights",
+            "stargaze": "Stargaze",
+            # Silly
+            "hiccup": "Hiccup",
+            "sneeze_fly": "Sneeze Fly",
+            "trip": "Trip Over Nothing",
+            "chase_tail": "Chase Own Tail",
+            "try_whistle": "Try to Whistle",
+            # Weather
             "rain_umbrella": "Umbrella in Rain",
             "sunny_shades": "Sunglasses Vibes",
             "cold_shiver": "Shiver in Cold",
-            "heat_melt": "Melt in Heat",
-            "dramatic_tear": "Dramatic Tear",
-            "laugh_fall": "Laugh & Fall Over",
-            "blush": "Blush",
-            "hide_face": "Hide Face",
-            "proud_puff": "Proud Puff",
-            "existential_stare": "Existential Stare",
-            "victory_pose": "Victory Pose",
-            "sulk": "Sulk",
-            "excited_wiggle": "Excited Wiggle",
-            "contemplate": "Contemplate",
-            "lift_weights": "Lift Weights",
-            "type_frantic": "Type Frantically",
-            "little_dance": "Little Dance",
-            "stargaze": "Stargaze",
-            "deep_focus": "Deep Focus",
-            "pushups": "Push-ups",
-            "head_bob": "Head Bob to Music",
-            "chase_tail": "Chase Own Tail",
-            "hiccup": "Hiccup",
-            "sneeze_fly": "Sneeze Fly",
-            "spooked_reflection": "Spooked by Reflection",
-            "trip": "Trip Over Nothing",
-            "statue": "Pretend Statue",
-            "burp": "Burp",
-            "jump_scare": "Jump Scare",
-            "try_whistle": "Try to Whistle",
+            # Seasonal
             "santa_gift": "Deliver Gift",
             "new_year_fireworks": "New Year Fireworks",
             "valentine_hearts": "Valentine Hearts",
             "halloween_spook": "Halloween Spook",
-            "spring_stretch": "Spring Stretch",
-            "summer_vibes": "Summer Vibes",
-            "cooking": "Cooking",
+            # Hobbies
             "painting": "Painting",
-            "karate_chop": "Karate Chop",
-            "ghost_pretend": "Ghost Pretend",
-            "writing_letter": "Write a Letter",
-            "yoga": "Yoga",
-            "bird_watching": "Bird Watching",
-            "air_guitar": "Air Guitar",
-            "pillow_fort": "Pillow Fort",
-            "shadow_puppets": "Shadow Puppets",
+            "gaming": "Gaming",
+            "gardening": "Gardening",
+            "journaling": "Journaling",
+            "piano": "Play Piano",
         }
 
         _CATEGORY_LABELS = {
-            "hobbies": "Hobbies",
-            "daily_life": "Daily Life",
-            "activity": "Activities",
-            "silly": "Silly",
-            "emotional": "Emotional",
-            "weather": "Weather",
-            "seasonal": "Seasonal",
+            "hobby": "\U0001f3a8  Hobbies",
+            "daily_life": "\u2615  Daily Life",
+            "emotional": "\U0001f49b  Emotional",
+            "activity": "\U0001f3b5  Activities",
+            "silly": "\U0001f643  Silly",
+            "weather": "\u2602  Weather",
+            "seasonal": "\U0001f384  Seasonal",
         }
 
         # Group animations by category
@@ -2361,9 +2608,9 @@ class FishWidget(QWidget):
             display = _DISPLAY_NAMES.get(name, name.replace("_", " ").title())
             by_cat.setdefault(cat, []).append((name, display))
 
-        # Show hobbies first, then the rest
-        cat_order = ["hobbies", "daily_life", "activity", "silly",
-                      "emotional", "weather", "seasonal"]
+        # Hobbies first, then other categories
+        cat_order = ["hobby", "daily_life", "emotional", "activity", "silly",
+                      "weather", "seasonal"]
         for cat in cat_order:
             items = by_cat.get(cat)
             if not items:
@@ -3078,7 +3325,7 @@ class FishWidget(QWidget):
         """In companion mode, drift slowly toward the cursor."""
         if not self._companion_mode or self._is_dragging:
             return
-        if self.emotions.dominant_emotion() == "sleepy":
+        if self.is_deeply_asleep():
             return
         cursor = QCursor.pos()
         pos = self.pos()
@@ -3123,7 +3370,7 @@ class FishWidget(QWidget):
         import random
         if not self._jokes_enabled:
             return
-        if self.emotions.dominant_emotion() == "sleepy":
+        if self.is_deeply_asleep():
             return
         if self._tts.is_speaking or self._voice.is_recording:
             return
@@ -3153,6 +3400,7 @@ class FishWidget(QWidget):
         if self._chat_window is None:
             self._chat_window = ChatWindow(self._chat, self)
         if not self._chat_window.isVisible():
+            self.animator.stop_sequence()  # Cancel animation when user starts chatting
             self._chat_window.show()
         self._chat_window.raise_()
         self._chat_window.activateWindow()

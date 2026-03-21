@@ -9,3 +9,4 @@ _update_staging/
 _apply_update.cmd
 _rollback.cmd
 secrets.json
+debug_output.txt

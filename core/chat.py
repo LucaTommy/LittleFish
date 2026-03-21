@@ -134,7 +134,10 @@ class FishChat(QObject):
         elif session_m > 5:
             situation_parts.append(f"The user has been on the computer for {session_m} minutes.")
         if active_app:
-            situation_parts.append(f"They are currently using {active_app}.")
+            situation_parts.append(f"The user is currently in: {active_app}.")
+            window_title = ctx.get("window_title", "")
+            if window_title:
+                situation_parts.append(f"Window title: {window_title}. React to this context naturally when relevant.")
             # Inject fish's opinion on the active app if one exists
             from core.personality import get_opinion
             op = get_opinion(active_app)

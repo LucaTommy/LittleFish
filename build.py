@@ -74,6 +74,7 @@ def build_fish():
         "--hidden-import", "mss.screenshot",
         "--hidden-import", "mss.tools",
         "--hidden-import", "mss.exception",
+        "--hidden-import", "vosk",
         str(ROOT / "main.py"),
     ]
     print("Building Little Fish...")

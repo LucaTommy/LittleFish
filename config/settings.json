@@ -18,8 +18,8 @@
     "size": 55,
     "opacity": 1.0,
     "position": [
-      64,
-      408
+      1270,
+      688
     ],
     "always_on_top": true,
     "screen": 0,
@@ -37,7 +37,7 @@
   },
   "voice": {
     "push_to_talk_key": "ctrl_right",
-    "always_listening": false,
+    "always_listening": true,
     "tts_enabled": true,
     "tts_voice": "default",
     "whisper_mode": "groq"

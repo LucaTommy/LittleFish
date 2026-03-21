@@ -422,6 +422,53 @@ class SettingsDialog(QDialog):
             lambda t: self._on_voice_setting("whisper_mode", t))
         voice_form.addRow("Transcription:", self._whisper_combo)
 
+        # Voice language preference (auto / en / it)
+        self._voice_lang_combo = QComboBox()
+        self._voice_lang_combo.addItems(["auto", "en", "it"])
+        cur_lang = voice.get("voice_language", "auto")
+        idx_lang = self._voice_lang_combo.findText(cur_lang)
+        if idx_lang >= 0:
+            self._voice_lang_combo.setCurrentIndex(idx_lang)
+        self._voice_lang_combo.currentTextChanged.connect(
+            lambda t: self._on_voice_setting("voice_language", t))
+        voice_form.addRow("Language:", self._voice_lang_combo)
+
+        # Edge TTS voice pickers
+        en_voices = [
+            "en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural",
+            "en-US-ChristopherNeural", "en-US-EricNeural", "en-US-MichelleNeural",
+            "en-US-RogerNeural", "en-US-SteffanNeural",
+            "en-GB-SoniaNeural", "en-GB-RyanNeural", "en-GB-LibbyNeural",
+            "en-AU-NatashaNeural", "en-AU-WilliamNeural",
+        ]
+        it_voices = [
+            "it-IT-ElsaNeural", "it-IT-DiegoNeural", "it-IT-IsabellaNeural",
+            "it-IT-GiuseppeNeural", "it-IT-BenignoNeural", "it-IT-CalimeroNeural",
+            "it-IT-CataldoNeural", "it-IT-FabiolaNeural", "it-IT-FiammaNeural",
+            "it-IT-LisandroNeural", "it-IT-PalmiraNeural", "it-IT-PierinaNeural",
+            "it-IT-RinaldoNeural",
+        ]
+
+        self._voice_en_combo = QComboBox()
+        self._voice_en_combo.addItems(en_voices)
+        cur_en = voice.get("edge_voice_en", "en-US-AriaNeural")
+        idx_en = self._voice_en_combo.findText(cur_en)
+        if idx_en >= 0:
+            self._voice_en_combo.setCurrentIndex(idx_en)
+        self._voice_en_combo.currentTextChanged.connect(
+            lambda t: self._on_voice_setting("edge_voice_en", t))
+        voice_form.addRow("English voice:", self._voice_en_combo)
+
+        self._voice_it_combo = QComboBox()
+        self._voice_it_combo.addItems(it_voices)
+        cur_it = voice.get("edge_voice_it", "it-IT-ElsaNeural")
+        idx_it = self._voice_it_combo.findText(cur_it)
+        if idx_it >= 0:
+            self._voice_it_combo.setCurrentIndex(idx_it)
+        self._voice_it_combo.currentTextChanged.connect(
+            lambda t: self._on_voice_setting("edge_voice_it", t))
+        voice_form.addRow("Italian voice:", self._voice_it_combo)
+
         voice_group.setLayout(voice_form)
         layout.addWidget(voice_group)
 
@@ -732,6 +779,7 @@ class SettingsDialog(QDialog):
     def _on_voice_setting(self, key: str, value):
         self._config.setdefault("voice", {})[key] = value
         self._fish._save_config()
+        self._fish.apply_config()
 
     def _on_intelligence(self, key: str, checked: bool):
         self._config.setdefault("intelligence", {})[key] = checked
@@ -783,6 +831,7 @@ class SettingsDialog(QDialog):
             "voice": {
                 "tts_enabled": True, "whisper_mode": "groq",
                 "push_to_talk_key": "ctrl_right", "always_listening": False,
+                "voice_language": "auto",
             },
             "intelligence": {
                 "companion_mode": False, "clipboard_reactions": False,
@@ -821,6 +870,7 @@ class SettingsDialog(QDialog):
             cb.setChecked(False)
         self._tts_enabled.setChecked(True)
         self._whisper_combo.setCurrentText("groq")
+        self._voice_lang_combo.setCurrentText("auto")
         self._ptt_combo.setCurrentText("ctrl_right")
         self._always_listen_cb.setChecked(False)
 

@@ -1,17 +1,40 @@
 """
 Text-to-speech wrapper for Little Fish.
-Supports two providers:
-  - pyttsx3 (offline, default)
-  - ElevenLabs (cloud, requires API key)
+Supports three providers (priority order):
+  1. ElevenLabs (cloud, requires API key — premium override)
+  2. Edge TTS  (cloud, free, natural voices — primary engine)
+  3. pyttsx3   (offline — emergency fallback)
 Runs on a background thread to avoid blocking.
 """
 
+import asyncio
 import io
+import os
+import subprocess
+import tempfile
 import threading
 import queue
-import tempfile
 
-import pyttsx3
+# ---------------------------------------------------------------------------
+# Language detection (simple, no external library)
+# ---------------------------------------------------------------------------
+
+ITALIAN_WORDS = {
+    "ciao", "come", "cosa", "perché", "quando", "dove",
+    "bene", "grazie", "prego", "sono", "hai", "non", "che",
+    "una", "del", "della", "degli", "alle", "per", "con",
+    "sì", "capito", "okay", "allora", "quindi", "però",
+    "adesso", "ancora", "sempre", "anche", "molto", "bello",
+    "stai", "questo", "questa", "tutto",
+    "buongiorno", "buonasera", "scusa", "dimmi", "fai",
+}
+
+
+def detect_language(text: str) -> str:
+    """Return 'it' if text looks Italian, else 'en'."""
+    words = set(text.lower().split())
+    italian_hits = len(words & ITALIAN_WORDS)
+    return "it" if italian_hits >= 1 else "en"
 
 
 class TTS:
@@ -21,11 +44,16 @@ class TTS:
                          and config.get("permissions", {}).get("tts", True))
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._speaking = False
+        self._lock = threading.Lock()
 
         voice_cfg = config.get("voice", {})
-        self._provider = voice_cfg.get("tts_provider", "pyttsx3")  # "pyttsx3" or "elevenlabs"
+        self._provider = voice_cfg.get("tts_provider", "edge")  # "edge", "elevenlabs", or "pyttsx3"
         self._elevenlabs_key = voice_cfg.get("elevenlabs_key", "")
         self._elevenlabs_voice = voice_cfg.get("elevenlabs_voice", "Rachel")
+
+        # Edge TTS voices
+        self._edge_voice_en = voice_cfg.get("edge_voice_en", "en-US-AriaNeural")
+        self._edge_voice_it = voice_cfg.get("edge_voice_it", "it-IT-ElsaNeural")
 
         # Init engine on background thread
         self._thread = threading.Thread(target=self._worker, daemon=True)
@@ -35,25 +63,175 @@ class TTS:
     def is_speaking(self) -> bool:
         return self._speaking
 
+    def set_voice(self, lang: str, voice_name: str):
+        """Update voice at runtime. lang is 'en' or 'it'."""
+        if lang == "it":
+            self._edge_voice_it = voice_name
+        else:
+            self._edge_voice_en = voice_name
+
     def say(self, text: str):
         """Queue text to be spoken. Non-blocking."""
         if self._enabled and text:
+            # Set speaking immediately so mouth sync starts right away
+            with self._lock:
+                self._speaking = True
             self._queue.put(text)
 
     def stop(self):
         """Signal the worker to shut down."""
         self._queue.put(None)
 
+    def stop_playback(self):
+        """Immediately halt current audio playback (barge-in support)."""
+        import ctypes
+        try:
+            mci = ctypes.windll.winmm.mciSendStringW
+            mci('stop lf_tts', None, 0, 0)
+            mci('close lf_tts', None, 0, 0)
+        except Exception:
+            pass
+        with self._lock:
+            self._speaking = False
+
+    # ------------------------------------------------------------------
+    # Worker dispatch
+    # ------------------------------------------------------------------
+
     def _worker(self):
-        """Background thread: owns TTS engine."""
-        if self._provider == "elevenlabs" and self._elevenlabs_key:
-            self._worker_elevenlabs()
-        else:
-            self._worker_pyttsx3()
+        """Background thread: route to the appropriate TTS engine."""
+        # ElevenLabs takes priority if configured
+        if self._elevenlabs_key and self._provider in ("elevenlabs", "edge"):
+            # Try ElevenLabs; fall back to Edge if voice resolution fails
+            voice_id = self._resolve_elevenlabs_voice()
+            if voice_id:
+                self._worker_elevenlabs(voice_id)
+                return
+
+        # Primary: Edge TTS
+        try:
+            import edge_tts  # noqa: F401
+            self._worker_edge()
+            return
+        except ImportError:
+            pass
+
+        # Fallback: pyttsx3
+        self._worker_pyttsx3()
+
+    # ------------------------------------------------------------------
+    # Edge TTS engine (primary)
+    # ------------------------------------------------------------------
+
+    def _worker_edge(self):
+        """Edge TTS loop — uses async edge_tts wrapped in a thread event loop."""
+        loop = asyncio.new_event_loop()
+
+        while True:
+            text = self._queue.get()
+            if text is None:
+                break
+            try:
+                with self._lock:
+                    self._speaking = True
+                lang = detect_language(text)
+                voice = self._edge_voice_it if lang == "it" else self._edge_voice_en
+                loop.run_until_complete(self._edge_speak(text, voice))
+            except Exception as e:
+                print(f"[TTS] Edge TTS error: {e}")
+                # Try pyttsx3 fallback for this one utterance
+                self._pyttsx3_fallback_say(text)
+            finally:
+                with self._lock:
+                    self._speaking = False
+
+        loop.close()
+
+    @staticmethod
+    async def _edge_speak(text: str, voice: str):
+        """Generate audio with edge_tts and play it."""
+        import edge_tts
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        try:
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(tmp_path)
+            TTS._play_mp3(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _play_mp3(path: str):
+        """Play an MP3 file synchronously using Windows MCI (instant, no process spawn)."""
+        import ctypes
+        try:
+            mci = ctypes.windll.winmm.mciSendStringW
+            # Use the file path as part of the alias to avoid collisions
+            alias = "lf_tts"
+            mci(f'close {alias}', None, 0, 0)  # clean up any previous
+            ret = mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, 0)
+            if ret != 0:
+                raise RuntimeError(f"MCI open failed: {ret}")
+            mci(f'play {alias} wait', None, 0, 0)
+            mci(f'close {alias}', None, 0, 0)
+        except Exception:
+            # ffplay fallback
+            try:
+                subprocess.run(
+                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+                    timeout=60,
+                    creationflags=0x08000000,
+                )
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # pyttsx3 fallback
+    # ------------------------------------------------------------------
 
     def _worker_pyttsx3(self):
         """pyttsx3 offline TTS loop."""
+        engine = self._init_pyttsx3()
+        if engine is None:
+            return
+
+        while True:
+            text = self._queue.get()
+            if text is None:
+                break
+            try:
+                with self._lock:
+                    self._speaking = True
+                engine.say(text)
+                engine.runAndWait()
+            except Exception:
+                pass
+            finally:
+                with self._lock:
+                    self._speaking = False
+
+    def _pyttsx3_fallback_say(self, text: str):
+        """One-shot pyttsx3 fallback for a single utterance."""
         try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            rate = engine.getProperty("rate")
+            engine.setProperty("rate", int(rate * 1.2))
+            engine.say(text)
+            engine.runAndWait()
+        except Exception:
+            pass
+
+    def _init_pyttsx3(self):
+        """Initialize pyttsx3 engine. Returns engine or None."""
+        try:
+            import pyttsx3
             engine = pyttsx3.init()
             rate = engine.getProperty("rate")
             engine.setProperty("rate", int(rate * 1.2))
@@ -66,61 +244,50 @@ class TTS:
                         engine.setProperty("voice", v.id)
                         break
             else:
-                # Default to a higher-pitched voice (Zira on Windows)
                 for v in voices:
                     if "zira" in v.name.lower():
                         engine.setProperty("voice", v.id)
                         break
+            return engine
         except Exception:
-            return
+            return None
 
-        while True:
-            text = self._queue.get()
-            if text is None:
-                break
-            try:
-                self._speaking = True
-                engine.say(text)
-                engine.runAndWait()
-            except Exception:
-                pass
-            finally:
-                self._speaking = False
+    # ------------------------------------------------------------------
+    # ElevenLabs (premium override)
+    # ------------------------------------------------------------------
 
-    def _worker_elevenlabs(self):
+    def _worker_elevenlabs(self, voice_id: str):
         """ElevenLabs cloud TTS loop."""
-        import urllib.request
-        import urllib.error
-        import json
-
-        # Resolve voice ID from name
-        voice_id = self._resolve_elevenlabs_voice()
-        if not voice_id:
-            # Fallback to pyttsx3
-            self._worker_pyttsx3()
-            return
-
         while True:
             text = self._queue.get()
             if text is None:
                 break
             try:
-                self._speaking = True
+                with self._lock:
+                    self._speaking = True
                 audio_data = self._call_elevenlabs(voice_id, text)
                 if audio_data:
-                    self._play_audio_bytes(audio_data)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    try:
+                        tmp.write(audio_data)
+                        tmp.close()
+                        self._play_mp3(tmp.name)
+                    finally:
+                        try:
+                            os.unlink(tmp.name)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             finally:
-                self._speaking = False
+                with self._lock:
+                    self._speaking = False
 
     def _resolve_elevenlabs_voice(self) -> str:
-        """Look up an ElevenLabs voice ID by name. Returns voice_id or ''."""
+        """Look up an ElevenLabs voice ID by name."""
         import urllib.request
-        import urllib.error
         import json
 
-        # Common default voice IDs so we don't have to call the API
         KNOWN = {
             "rachel": "21m00Tcm4TlvDq8ikWAM",
             "adam": "pNInz6obpgDQGcFmaJgB",
@@ -132,7 +299,6 @@ class TTS:
         if name_lower in KNOWN:
             return KNOWN[name_lower]
 
-        # Query API for custom voices
         try:
             req = urllib.request.Request(
                 "https://api.elevenlabs.io/v1/voices",
@@ -150,7 +316,6 @@ class TTS:
     def _call_elevenlabs(self, voice_id: str, text: str) -> bytes | None:
         """Call ElevenLabs TTS API and return MP3 bytes."""
         import urllib.request
-        import urllib.error
         import json
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -175,39 +340,3 @@ class TTS:
                 return resp.read()
         except Exception:
             return None
-
-    @staticmethod
-    def _play_audio_bytes(data: bytes):
-        """Play MP3 audio bytes using a temp file."""
-        import os
-        import subprocess
-        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        try:
-            tmp.write(data)
-            tmp.close()
-            # Use Windows Media.SoundPlayer (WAV) doesn't work for MP3.
-            # Use wmplayer via COM or ffplay as fallback.
-            subprocess.run(
-                ["powershell", "-WindowStyle", "Hidden", "-Command",
-                 f'Add-Type -AssemblyName PresentationCore; '
-                 f'$p = New-Object System.Windows.Media.MediaPlayer; '
-                 f'$p.Open([Uri]::new(\"{tmp.name}\")); '
-                 f'$p.Play(); '
-                 f'Start-Sleep -Milliseconds 500; '
-                 f'while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; '
-                 f'$p.Close()'],
-                timeout=30, creationflags=0x08000000,
-            )
-        except Exception:
-            try:
-                subprocess.run(
-                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp.name],
-                    timeout=30, creationflags=0x08000000,
-                )
-            except Exception:
-                pass
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
