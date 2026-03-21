@@ -66,6 +66,14 @@ def build_fish():
         "--hidden-import", "dateutil",
         "--hidden-import", "dateutil.parser",
         "--collect-all", "mss",
+        "--hidden-import", "mss",
+        "--hidden-import", "mss.base",
+        "--hidden-import", "mss.factory",
+        "--hidden-import", "mss.windows",
+        "--hidden-import", "mss.models",
+        "--hidden-import", "mss.screenshot",
+        "--hidden-import", "mss.tools",
+        "--hidden-import", "mss.exception",
         str(ROOT / "main.py"),
     ]
     print("Building Little Fish...")

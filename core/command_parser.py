@@ -95,7 +95,7 @@ PATTERNS = [
      lambda m: _volume(m.group(1))),
 
     # "take a break" / "pause" / "rest"
-    (r"(?:take\s+a\s+break|pause|rest|chill)",
+    (r"(?:take\s+a\s+break|\bpause\b|\brest\b|\bchill\b)",
      lambda m: CommandResult("rest_mode", "", "I'll be quiet for a bit. Poke me when you need me.")),
 
     # "come here"
@@ -103,7 +103,7 @@ PATTERNS = [
      lambda m: CommandResult("come_to_cursor", "", "Coming!")),
 
     # "go away" / "hide"
-    (r"(?:go\s+away|hide|disappear|minimize)",
+    (r"(?:go\s+away|\bhide\b|\bdisappear\b|\bminimize\b)",
      lambda m: CommandResult("hide", "", "I'll be in the tray if you need me.")),
 
     # Greetings
@@ -170,7 +170,7 @@ PATTERNS = [
      lambda m: CommandResult("confirm_yes", "", "Okay!")),
 
     # "mute" / "unmute"
-    (r"(mute|unmute)",
+    (r"\b(mute|unmute)\b",
      lambda m: _toggle_mute(m.group(1))),
 
     # --- Todo list commands ---
@@ -194,11 +194,11 @@ PATTERNS = [
      lambda m: CommandResult("companion_off", "", "Okay, I'll stay put.")),
 
     # --- Briefing ---
-    (r"(?:morning\s+)?(?:brief(?:ing)?|summary|report)",
+    (r"(?:morning\s+)?(?:\bbrief(?:ing)?\b|\bsummary\b|\breport\b)",
      lambda m: CommandResult("briefing", "", "")),
 
     # --- Tell me a joke / fact ---
-    (r"(?:tell\s+me\s+a\s+)?(?:joke|fun\s+fact|fact)(?:\s+please)?",
+    (r"(?:tell\s+me\s+a\s+)?(?:\bjoke\b|fun\s+fact|\bfact\b)(?:\s+please)?",
      lambda m: CommandResult("joke", "", "")),
 
     # ===================================================================
@@ -290,7 +290,7 @@ PATTERNS = [
      lambda m: _create_text_file(m.group(1))),
 
     # "open recent [folder]" / "open last modified file in [folder]"
-    (r"(?:open\s+)?(?:most\s+)?recent(?:\s+file)?(?:\s+(?:in|from)\s+)?(downloads?|desktop|documents?|pictures?|music|videos?)?",
+    (r"(?:open\s+(?:the\s+)?)?(?:most\s+)?\brecent\s+(?:file|download|desktop|document|picture|music|video)s?(?:\s+(?:in|from)\s+)?(downloads?|desktop|documents?|pictures?|music|videos?)?",
      lambda m: _open_recent_file(m.group(1))),
 
     # "rename file [old] to [new]" / "rename [old] to [new]"
@@ -516,6 +516,10 @@ PATTERNS = [
     (r"(?:review\s+(?:this|my\s+screen)|what\s+do\s+you\s+think|be\s+honest|critique\s+this|roast\s+my\s+screen)",
      lambda m: CommandResult("screen_review", "", "")),
 
+    # "where?" / "where is that?" / "show me" / "point at it" — fish moves to the thing it was talking about
+    (r"(?:where(?:\s+(?:is\s+(?:that|it)|do\s+you\s+see\s+(?:it|that)))?[?\s]*$|show\s+me(?:\s+where)?|point\s+(?:at|to)\s+it)",
+     lambda m: CommandResult("point_at_screen", "", "")),
+
     # ===================================================================
     # Phase 9: Windows & Desktop (continued)
     # ===================================================================
@@ -607,9 +611,15 @@ class CommandParser:
                      "greeting", "hello", f"Hey! You called me {fn}?"))
             )
 
-    def parse(self, text: str) -> Optional[CommandResult]:
-        """Parse a transcribed voice command. Returns None if nothing matched."""
+    def parse(self, text: str, from_chat: bool = False) -> Optional[CommandResult]:
+        """Parse a transcribed voice command. Returns None if nothing matched.
+        
+        When from_chat=True, longer conversational sentences skip ambiguous
+        regex matches and the Groq command classifier is disabled (the chat
+        window routes unmatched text to AI conversation instead).
+        """
         clean = text.lower().strip()
+        word_count = len(clean.split())
 
         # Try custom name patterns first
         for pattern, handler in self._extra_patterns:
@@ -618,13 +628,35 @@ class CommandParser:
                 return handler(m)
 
         # Try regex patterns
+        # Actions that are too ambiguous to match inside longer chat sentences
+        _AMBIGUOUS_ACTIONS = {
+            "greeting", "rest_mode", "hide", "status", "confirm_yes",
+            "briefing", "joke",
+        }
+        # Actions with side effects that should NEVER fire from a conversational sentence
+        _DANGEROUS_IN_CHAT = {
+            "file", "confirm_power",
+        }
         for pattern, handler in PATTERNS:
             m = re.search(pattern, clean)
             if m:
-                return handler(m)
+                # In chat context with conversational sentences, skip
+                # dangerous side-effect patterns BEFORE executing the handler
+                if from_chat and word_count > 3:
+                    # Peek at the handler to see what it would return.
+                    # For safe (no-side-effect) handlers, run normally.
+                    # For dangerous ones, we need to check first.
+                    result = handler(m)
+                    if result.action in _DANGEROUS_IN_CHAT:
+                        continue
+                    if result.action in _AMBIGUOUS_ACTIONS:
+                        continue
+                    return result
+                result = handler(m)
+                return result
 
-        # Groq LLM fallback
-        if self._groq_keys:
+        # Groq LLM fallback — skip in chat context (chat routes to AI directly)
+        if self._groq_keys and not from_chat:
             return self._groq_fallback(clean)
 
         return None

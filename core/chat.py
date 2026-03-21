@@ -284,6 +284,9 @@ class FishChat(QObject):
                 reply = completion.choices[0].message.content.strip()
                 from core.personality import apply_verbal_tic
                 reply = apply_verbal_tic(reply)
+                self._history.append({"role": "assistant", "content": reply})
+                from core.intelligence import save_chat_history
+                save_chat_history(self._history)
                 self.response_ready.emit(reply)
                 return
             except Exception:

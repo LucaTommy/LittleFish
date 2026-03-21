@@ -172,6 +172,10 @@ class FishRenderer:
         if self._custom_name and self._show_name:
             self._draw_name(p, self._custom_name)
 
+        # Animation prop overlay (coffee cup, book, umbrella, etc.)
+        if hasattr(animator, 'active_prop') and animator.active_prop is not None:
+            self._draw_prop(p, animator.active_prop)
+
         # Particles (drawn after face, around body)
         if hasattr(animator, 'particles'):
             self._draw_particles(p, animator.particles)
@@ -858,6 +862,153 @@ class FishRenderer:
     # ------------------------------------------------------------------
     # Particles
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Animation props
+    # ------------------------------------------------------------------
+
+    def _draw_prop(self, p: QPainter, prop):
+        """Draw an animation prop overlaid on/near the fish."""
+        from core.animation_library import AnimProp
+
+        if prop == AnimProp.COFFEE_CUP:
+            # Tiny coffee cup held near right side
+            cup = QColor(180, 120, 60)
+            cream = QColor(240, 220, 180)
+            steam = QColor(200, 200, 200, 140)
+            x, y = B - 2, B + 12
+            p.fillRect(x, y, 4, 5, cup)                   # cup body
+            p.fillRect(x + 4, y + 1, 1, 3, cup)           # handle
+            p.fillRect(x + 1, y + 1, 2, 1, cream)         # cream top
+            p.fillRect(x + 1, y - 1, 1, 1, steam)         # steam
+            p.fillRect(x + 2, y - 2, 1, 1, steam)         # steam
+
+        elif prop == AnimProp.TINY_BOOK:
+            # Small open book held below face
+            cover = QColor(100, 140, 200)
+            page = QColor(240, 235, 220)
+            spine = QColor(70, 100, 160)
+            x, y = B + 3, B + 20
+            p.fillRect(x, y, 4, 5, cover)                 # left cover
+            p.fillRect(x + 4, y, 4, 5, QColor(120, 160, 220))  # right cover
+            p.fillRect(x + 1, y + 1, 3, 3, page)          # left page
+            p.fillRect(x + 5, y + 1, 3, 3, page)          # right page
+            p.fillRect(x + 4, y, 1, 5, spine)             # spine
+
+        elif prop == AnimProp.BLANKET:
+            # Blanket draped over lower half
+            blanket = QColor(120, 100, 180, 200)
+            edge = QColor(100, 80, 160, 220)
+            p.fillRect(B - 1, B + 14, PIXEL_BODY + 2, 10, blanket)
+            p.fillRect(B - 1, B + 14, PIXEL_BODY + 2, 1, edge)  # top edge
+            # Fold detail
+            p.fillRect(B + 3, B + 16, 6, 1, QColor(140, 120, 200, 180))
+            p.fillRect(B + 12, B + 17, 5, 1, QColor(140, 120, 200, 180))
+
+        elif prop == AnimProp.UMBRELLA:
+            # Umbrella held above head
+            canopy = QColor(60, 130, 200)
+            dark = QColor(40, 100, 170)
+            handle = QColor(120, 90, 60)
+            # Canopy arc
+            p.fillRect(B + 1, B - 5, 22, 1, dark)
+            p.fillRect(B + 0, B - 4, 24, 1, canopy)
+            p.fillRect(B + 1, B - 3, 22, 1, canopy)
+            p.fillRect(B + 3, B - 2, 18, 1, canopy)
+            # Handle
+            p.fillRect(B + 12, B - 1, 1, 4, handle)
+            p.fillRect(B + 11, B + 2, 1, 1, handle)       # hook
+
+        elif prop == AnimProp.SUNGLASSES:
+            # Cool sunglasses on the face
+            frame = QColor(30, 30, 30)
+            lens = QColor(40, 40, 60, 200)
+            highlight = QColor(100, 100, 120, 150)
+            ly = B + 8
+            # Left lens
+            p.fillRect(B + 5, ly, 5, 3, frame)
+            p.fillRect(B + 6, ly + 1, 3, 1, lens)
+            p.fillRect(B + 6, ly + 1, 1, 1, highlight)
+            # Right lens
+            p.fillRect(B + 14, ly, 5, 3, frame)
+            p.fillRect(B + 15, ly + 1, 3, 1, lens)
+            p.fillRect(B + 15, ly + 1, 1, 1, highlight)
+            # Bridge
+            p.fillRect(B + 10, ly, 4, 1, frame)
+
+        elif prop == AnimProp.TOOTHBRUSH:
+            # Toothbrush held near mouth
+            handle_c = QColor(80, 180, 220)
+            bristle = QColor(240, 240, 250)
+            x, y = B + PIXEL_BODY, B + 14
+            p.fillRect(x, y, 4, 1, handle_c)              # handle
+            p.fillRect(x + 4, y - 1, 2, 3, bristle)       # bristles
+
+        elif prop == AnimProp.TINY_WEIGHTS:
+            # Tiny dumbbell held above head
+            bar = QColor(120, 120, 130)
+            weight = QColor(80, 80, 90)
+            x, y = B + 4, B - 3
+            p.fillRect(x + 3, y + 1, 8, 1, bar)           # bar
+            p.fillRect(x, y, 3, 3, weight)                 # left weight
+            p.fillRect(x + 11, y, 3, 3, weight)            # right weight
+
+        elif prop == AnimProp.SNACK:
+            # Small cookie/snack near left side
+            cookie = QColor(210, 170, 100)
+            chip = QColor(140, 100, 50)
+            x, y = B - 2, B + 14
+            p.fillRect(x, y, 4, 3, cookie)
+            p.fillRect(x + 1, y + 1, 1, 1, chip)          # choc chip
+            p.fillRect(x + 3, y, 1, 1, chip)              # choc chip
+
+        elif prop == AnimProp.SCARF:
+            # Warm scarf around lower body
+            scarf = QColor(200, 70, 70, 200)
+            stripe = QColor(220, 120, 120, 180)
+            y = B + 18
+            p.fillRect(B + 2, y, 20, 3, scarf)
+            p.fillRect(B + 2, y + 1, 20, 1, stripe)
+            # Hanging end
+            p.fillRect(B + PIXEL_BODY - 2, y + 3, 2, 4, scarf)
+            p.fillRect(B + PIXEL_BODY - 2, y + 4, 2, 1, stripe)
+
+        elif prop == AnimProp.PARTY_HORN:
+            # Party horn / noisemaker
+            horn = QColor(220, 60, 180)
+            tip = QColor(255, 200, 60)
+            x, y = B + PIXEL_BODY, B + 15
+            p.fillRect(x, y, 3, 2, horn)
+            p.fillRect(x + 3, y, 2, 2, QColor(60, 180, 220))
+            p.fillRect(x + 5, y, 1, 2, tip)
+
+        elif prop == AnimProp.GIFT_BOX:
+            # Small wrapped gift box
+            box = QColor(220, 60, 60)
+            ribbon = QColor(255, 215, 0)
+            x, y = B - 3, B + 16
+            p.fillRect(x, y, 6, 5, box)
+            p.fillRect(x, y + 2, 6, 1, ribbon)            # horizontal ribbon
+            p.fillRect(x + 3, y, 1, 5, ribbon)            # vertical ribbon
+            p.fillRect(x + 2, y - 1, 3, 1, ribbon)        # bow
+
+        elif prop == AnimProp.TELESCOPE:
+            # Small telescope / spyglass
+            tube = QColor(140, 120, 80)
+            lens_c = QColor(180, 200, 240)
+            x, y = B + PIXEL_BODY - 2, B + 4
+            p.fillRect(x, y, 5, 2, tube)
+            p.fillRect(x + 5, y - 1, 2, 4, tube)
+            p.fillRect(x + 7, y, 1, 2, lens_c)
+
+        elif prop == AnimProp.MIRROR:
+            # Small hand mirror
+            frame_c = QColor(180, 160, 100)
+            glass = QColor(200, 220, 240)
+            x, y = B - 4, B + 6
+            p.fillRect(x, y, 4, 5, frame_c)
+            p.fillRect(x + 1, y + 1, 2, 3, glass)
+            p.fillRect(x + 1, y + 5, 1, 3, frame_c)      # handle
 
     def _draw_particles(self, p: QPainter, particles: list):
         """Draw particle effects around the fish."""

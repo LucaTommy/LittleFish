@@ -1,6 +1,7 @@
 """
 Animation engine for Little Fish.
-Handles breathing, blinking, face transitions, and reaction animations.
+Handles breathing, blinking, face transitions, reaction animations,
+and complex multi-step animation sequences from the animation library.
 All timing in seconds. Called every frame (~16ms) from the main widget.
 """
 
@@ -249,6 +250,16 @@ class Animator:
         self.idle_gaze_x: float = 0.0
         self.idle_gaze_y: float = 0.0
 
+        # Animation sequence player
+        self._seq_active = None        # AnimSequence or None
+        self._seq_step_idx: int = 0
+        self._seq_step_timer: float = 0.0
+        self._seq_offset_x: float = 0.0
+        self._seq_offset_y: float = 0.0
+        self._seq_gaze_override = None  # (dx, dy) or None
+        self.active_prop = None         # AnimProp or None (for renderer)
+        self.is_playing_sequence: bool = False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -261,6 +272,7 @@ class Animator:
         self._update_reactions(dt)
         self._update_look_around(dt)
         self._update_particles(dt)
+        self._update_sequence(dt)
         self._compose_transforms()
 
     def set_face(self, state: str):
@@ -312,6 +324,36 @@ class Animator:
         self.blink.close_duration = 0.4
         self.blink.open_duration = 0.5
         self.blink.hold_duration = 2.0
+
+    def play_sequence(self, sequence):
+        """Start playing an AnimSequence from the animation library."""
+        if self._seq_active is not None:
+            return False  # already playing
+        self._seq_active = sequence
+        self._seq_step_idx = 0
+        self._seq_step_timer = 0.0
+        self._seq_offset_x = 0.0
+        self._seq_offset_y = 0.0
+        self._seq_gaze_override = None
+        self.active_prop = None
+        self.is_playing_sequence = True
+        sequence.last_played = time.monotonic()
+        # Execute the first step immediately if delay is 0
+        if sequence.steps and sequence.steps[0].delay <= 0:
+            self._execute_seq_step(sequence.steps[0])
+            self._seq_step_idx = 1
+        return True
+
+    def stop_sequence(self):
+        """Stop the current animation sequence."""
+        self._seq_active = None
+        self._seq_step_idx = 0
+        self._seq_step_timer = 0.0
+        self._seq_offset_x = 0.0
+        self._seq_offset_y = 0.0
+        self._seq_gaze_override = None
+        self.active_prop = None
+        self.is_playing_sequence = False
 
     # ------------------------------------------------------------------
     # Breathing
@@ -475,6 +517,81 @@ class Animator:
             self.rotation += getattr(self, '_reaction_rotation', 0.0)
             self.offset_x += getattr(self, '_reaction_offset_x', 0.0)
             self.offset_y += getattr(self, '_reaction_offset_y', 0.0)
+
+        # Add sequence offsets (smoothly interpolated)
+        if self._seq_active is not None:
+            self.offset_x += self._seq_offset_x
+            self.offset_y += self._seq_offset_y
+
+    # ------------------------------------------------------------------
+    # Animation sequence player
+    # ------------------------------------------------------------------
+
+    def _update_sequence(self, dt: float):
+        """Advance the animation sequence player."""
+        if self._seq_active is None:
+            return
+
+        seq = self._seq_active
+        if self._seq_step_idx >= len(seq.steps):
+            self.stop_sequence()
+            return
+
+        self._seq_step_timer += dt
+        step = seq.steps[self._seq_step_idx]
+
+        if self._seq_step_timer >= step.delay:
+            self._execute_seq_step(step)
+            self._seq_step_idx += 1
+            self._seq_step_timer = 0.0
+
+            # Check if sequence is done
+            if self._seq_step_idx >= len(seq.steps):
+                self.stop_sequence()
+
+        # Smooth gaze override toward target
+        if self._seq_gaze_override is not None:
+            tx, ty = self._seq_gaze_override
+            speed = min(dt * 4.0, 0.3)
+            self.idle_gaze_x += (tx - self.idle_gaze_x) * speed
+            self.idle_gaze_y += (ty - self.idle_gaze_y) * speed
+
+    def _execute_seq_step(self, step):
+        """Execute a single animation step."""
+        from core.animation_library import AnimProp
+
+        if step.face is not None:
+            self.set_face(step.face)
+
+        if step.reaction is not None:
+            rtype = ReactionType[step.reaction]
+            self.queue_reaction(rtype)
+
+        if step.particle is not None:
+            for _ in range(step.particle_count):
+                self.spawn_particle(step.particle)
+
+        if step.prop is not None:
+            self.active_prop = step.prop
+
+        if step.hide_prop:
+            self.active_prop = None
+
+        if step.blink == "slow":
+            self.trigger_slow_blink()
+        elif step.blink == "double":
+            self.trigger_double_blink()
+        elif step.blink == "nod_off":
+            self.trigger_nod_off()
+
+        if step.offset_x != 0.0 or step.offset_y != 0.0:
+            self._seq_offset_x = step.offset_x
+            self._seq_offset_y = step.offset_y
+
+        if step.look_dir is not None:
+            self._seq_gaze_override = step.look_dir
+            if step.look_dir == (0.0, 0.0):
+                self._seq_gaze_override = None
 
     # ------------------------------------------------------------------
     # Particles

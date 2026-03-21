@@ -78,6 +78,7 @@ class ScreenReviewer(QObject):
     """Screenshot → OCR → Groq critique pipeline."""
 
     review_ready = pyqtSignal(str)
+    peek_ready = pyqtSignal(str)       # lightweight comment (autonomous)
     error_occurred = pyqtSignal(str)
     ask_focus = pyqtSignal()  # emitted to ask user "what am I looking at?"
 
@@ -85,6 +86,9 @@ class ScreenReviewer(QObject):
         super().__init__()
         self._groq_keys = groq_keys or []
         self._key_index = 0
+        # Last peek data for "where?" / pointing feature
+        self._last_peek_boxes: list[dict] = []   # [{text, x, y, w, h}, ...]
+        self._last_peek_comment: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -97,6 +101,17 @@ class ScreenReviewer(QObject):
             return
         thread = threading.Thread(
             target=self._run_review, args=(focus,), daemon=True
+        )
+        thread.start()
+
+    def peek(self, window_title: str = "", process_name: str = ""):
+        """Quick autonomous glance at the screen — short casual comment."""
+        if not self._groq_keys:
+            return
+        thread = threading.Thread(
+            target=self._run_peek,
+            args=(window_title, process_name),
+            daemon=True,
         )
         thread.start()
 
@@ -129,6 +144,89 @@ class ScreenReviewer(QObject):
                 pytesseract.pytesseract.tesseract_cmd = default
         text = pytesseract.image_to_string(img)
         return text.strip()
+
+    def _extract_text_with_boxes(self, img: "Image.Image") -> tuple[str, list[dict]]:
+        """Run Tesseract OCR and return (full_text, list of word boxes).
+
+        Each box: {"text": str, "x": int, "y": int, "w": int, "h": int}
+        Coordinates are in screen pixels (primary monitor).
+        """
+        import pytesseract
+        import shutil
+
+        tess_path = shutil.which("tesseract")
+        if not tess_path:
+            import os
+            default = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+            if os.path.isfile(default):
+                pytesseract.pytesseract.tesseract_cmd = default
+
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        boxes = []
+        words = []
+        n = len(data["text"])
+        for i in range(n):
+            word = data["text"][i].strip()
+            if not word:
+                continue
+            words.append(word)
+            boxes.append({
+                "text": word,
+                "x": data["left"][i],
+                "y": data["top"][i],
+                "w": data["width"][i],
+                "h": data["height"][i],
+            })
+        full_text = " ".join(words)
+        return full_text, boxes
+
+    def find_on_screen(self, query: str) -> Optional[tuple[int, int]]:
+        """Search recent OCR data for text matching *query*.
+
+        Returns (screen_x, screen_y) center of the best match, or None.
+        Uses the bounding boxes stored from the last peek/review.
+        """
+        if not self._last_peek_boxes or not query:
+            return None
+
+        query_lower = query.lower().split()
+        if not query_lower:
+            return None
+
+        boxes = self._last_peek_boxes
+
+        # Try to find a consecutive run of words matching the query
+        best_score = 0
+        best_center = None
+
+        for start in range(len(boxes)):
+            matched = 0
+            x_min, y_min, x_max, y_max = 9999999, 9999999, 0, 0
+            for qi, qw in enumerate(query_lower):
+                idx = start + qi
+                if idx >= len(boxes):
+                    break
+                if qw in boxes[idx]["text"].lower():
+                    matched += 1
+                    b = boxes[idx]
+                    x_min = min(x_min, b["x"])
+                    y_min = min(y_min, b["y"])
+                    x_max = max(x_max, b["x"] + b["w"])
+                    y_max = max(y_max, b["y"] + b["h"])
+            if matched > best_score:
+                best_score = matched
+                best_center = ((x_min + x_max) // 2, (y_min + y_max) // 2)
+
+        # Also try single-word partial matches
+        if best_score == 0:
+            full_query = " ".join(query_lower)
+            for b in boxes:
+                if full_query in b["text"].lower() or b["text"].lower() in full_query:
+                    best_center = (b["x"] + b["w"] // 2, b["y"] + b["h"] // 2)
+                    best_score = 1
+                    break
+
+        return best_center if best_score > 0 else None
 
     def _send_to_groq(self, screen_text: str, focus: Optional[str]) -> str:
         """Send extracted text to Groq Llama for review."""
@@ -177,7 +275,8 @@ class ScreenReviewer(QObject):
         """Full pipeline on background thread."""
         try:
             img = self._capture_screen()
-            text = self._extract_text(img)
+            text, boxes = self._extract_text_with_boxes(img)
+            self._last_peek_boxes = boxes  # store for pointing
             if not text or len(text) < 20:
                 self.review_ready.emit(
                     "I can barely read anything on screen. "
@@ -185,6 +284,84 @@ class ScreenReviewer(QObject):
                 )
                 return
             review = self._send_to_groq(text, focus)
+            self._last_peek_comment = review
             self.review_ready.emit(review)
         except Exception as e:
             self.error_occurred.emit(f"Review failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Autonomous peek — lightweight screen glance
+    # ------------------------------------------------------------------
+
+    _PEEK_PROMPTS = [
+        (
+            "You are Little Fish, a desktop pet. You just glanced at the user's screen. "
+            "Based on the text below, make ONE short casual observation or comment — "
+            "like something you'd say while looking over someone's shoulder. "
+            "1 sentence max, be specific to what you see. No asterisks."
+        ),
+        (
+            "You are Little Fish. The user doesn't know you're looking at their screen. "
+            "Read the text below and make ONE short witty remark about what they're doing. "
+            "Be casual and natural — you're a friend peeking over their shoulder. "
+            "1 sentence, be specific. No asterisks."
+        ),
+        (
+            "You are Little Fish, a curious desktop pet. You noticed something on the user's screen. "
+            "Read the text below and ask ONE short, specific question or make a brief comment "
+            "about what you see. Sound genuinely curious, not robotic. 1 sentence. No asterisks."
+        ),
+    ]
+
+    def _run_peek(self, window_title: str, process_name: str):
+        """Lightweight OCR + short Groq comment on background thread."""
+        try:
+            img = self._capture_screen()
+            text, boxes = self._extract_text_with_boxes(img)
+            if not text or len(text) < 30:
+                return  # Nothing readable, skip silently
+
+            # Store boxes for "where?" / pointing feature
+            self._last_peek_boxes = boxes
+
+            import groq as groq_module
+
+            context = ""
+            if window_title:
+                context = f"The user has '{window_title}' open"
+                if process_name:
+                    context += f" ({process_name})"
+                context += ". "
+
+            system = random.choice(self._PEEK_PROMPTS)
+            user_msg = (
+                f"{context}"
+                f"Here's the text visible on their screen:\n\n"
+                f"---\n{text[:3000]}\n---\n\n"
+                "Your short comment (1 sentence):"
+            )
+
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ]
+
+            for _ in range(len(self._groq_keys)):
+                key = self._groq_keys[self._key_index]
+                try:
+                    client = groq_module.Groq(api_key=key)
+                    completion = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=messages,
+                        temperature=0.9,
+                        max_tokens=60,
+                    )
+                    reply = completion.choices[0].message.content.strip()
+                    if reply:
+                        self._last_peek_comment = reply
+                        self.peek_ready.emit(reply)
+                    return
+                except Exception:
+                    self._key_index = (self._key_index + 1) % len(self._groq_keys)
+        except Exception:
+            pass  # Autonomous peek failures are silent

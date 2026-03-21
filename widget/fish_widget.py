@@ -139,6 +139,7 @@ class FishWidget(QWidget):
 
         self._reviewer = ScreenReviewer(groq_keys)
         self._reviewer.review_ready.connect(self._on_review_ready)
+        self._reviewer.peek_ready.connect(self._on_peek_ready)
         self._reviewer.error_occurred.connect(lambda e: self._say(str(e)))
         self._review_focus: str | None = None
 
@@ -497,6 +498,11 @@ class FishWidget(QWidget):
 
         self.animator.update(dt)
         self.update()  # schedules paintEvent
+
+        # Keep chat bubble anchored to the fish
+        if self._bubble._showing:
+            anchor = self.mapToGlobal(QPoint(self.width() // 2, 0))
+            self._bubble.update_anchor(anchor)
 
         # Companion mode: drift toward cursor (disabled when movement engine active)
         if not self._movement.is_moving:
@@ -1229,6 +1235,9 @@ class FishWidget(QWidget):
             self._start_screen_review(focus)
             result.response = "Let me take a look..."
 
+        elif result.action == "point_at_screen":
+            result.response = self._point_at_last_mention()
+
         # Emotion reactions
         if result.success:
             self.emotions.spike("happy", 0.15)
@@ -1277,6 +1286,45 @@ class FishWidget(QWidget):
         self.animator.queue_reaction(ReactionType.HEAD_TILT)
         self._reviewer.review(focus)
 
+    def _point_at_last_mention(self) -> str:
+        """Try to move the fish to point at whatever it last commented about on screen."""
+        comment = self._reviewer._last_peek_comment
+        if not comment or not self._reviewer._last_peek_boxes:
+            return "I haven't looked at the screen recently — ask me to review it first!"
+
+        # Extract quoted words or key nouns from the comment to search for
+        import re
+        # Try quoted strings first (e.g., "Q LittleFish")
+        quoted = re.findall(r'["\u201c\u201d]([^"\u201c\u201d]+)["\u201c\u201d]', comment)
+        search_terms = quoted if quoted else []
+
+        # Also try capitalized multi-word phrases (likely UI elements)
+        if not search_terms:
+            caps = re.findall(r'\b([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)+)\b', comment)
+            search_terms = caps
+
+        # Fall back to longest meaningful words from the comment
+        if not search_terms:
+            words = [w for w in comment.split()
+                     if len(w) > 4 and w.lower() not in {
+                         "their", "there", "these", "those", "about",
+                         "which", "where", "would", "could", "should",
+                         "screen", "button", "thing", "something",
+                     }]
+            search_terms = words[:3]
+
+        # Search OCR data for each term
+        for term in search_terms:
+            pos = self._reviewer.find_on_screen(term)
+            if pos:
+                x, y = pos
+                # Walk to that position (offset so fish is beside it, not on top)
+                self._walk_to(x - self.width() // 2, y - self.height(), speed=800.0)
+                self.animator.queue_reaction(ReactionType.HEAD_TILT)
+                return f"Right here! I see it around this area."
+
+        return "I can't find it on screen anymore — it may have changed."
+
     def _on_review_ready(self, text: str):
         """Called when ScreenReviewer delivers the critique."""
         self._say(text)
@@ -1288,17 +1336,32 @@ class FishWidget(QWidget):
         if not self._chat_window.isVisible():
             self._open_chat_window()
 
+    def _on_peek_ready(self, text: str):
+        """Called when ScreenReviewer delivers a casual autonomous comment."""
+        if self._is_user_chatting:
+            return  # don't interrupt an active conversation
+        self._say(text)
+        self._tts.say(text)
+        self.emotions.spike("curious", 0.15)
+        self._shared_state.record_phrase()
+
     def _show_bubble(self, text: str):
         """Display a chat bubble above the fish."""
         anchor = self.mapToGlobal(QPoint(self.width() // 2, 0))
         self._bubble.show_message(text, anchor)
 
     def _sync_to_chat(self, text: str):
-        """Route fish-initiated messages to the chat window."""
+        """Route fish-initiated messages to the chat window and history."""
         if self._chat_window is None:
             from widget.chat_window import ChatWindow
             self._chat_window = ChatWindow(self._chat, self)
         self._chat_window._add_fish_message(text)
+        # Persist to chat history so messages survive window re-open / restart
+        hist = self._chat._history
+        if not hist or hist[-1].get("content") != text:
+            hist.append({"role": "assistant", "content": text})
+            from core.intelligence import save_chat_history
+            save_chat_history(hist)
 
     def _say(self, text: str):
         """Show bubble + always sync to chat history. Use this for all fish speech."""
@@ -1686,10 +1749,19 @@ class FishWidget(QWidget):
         # Record interaction for relationship
         self._behavior_engine.record_interaction()
 
-        # Skip high-energy behaviors while sleeping, but allow gentle ones
+        # When sleeping, only allow wake_up — no talking, moving, or animations
         is_sleepy = self.emotions.dominant_emotion() == "sleepy"
-        if is_sleepy and action in ("dance", "spin", "throw_particle", "bubble_particle",
-                                     "bounce", "follow_cursor", "wander", "peek_edge"):
+        if is_sleepy and action != "wake_up":
+            return
+
+        # When user is actively chatting, suppress speech behaviors
+        # (allow silent actions like blink, stretch, look_around, etc.)
+        _SPEECH_ACTIONS = {
+            "say", "thought", "rate_app", "opinion", "backstory",
+            "milestone", "separation_greeting", "screen_peek",
+            "excited", "worried", "grumpy", "sleepy_lock",
+        }
+        if self._is_user_chatting and action in _SPEECH_ACTIONS:
             return
 
         if action == "say" and message:
@@ -1802,24 +1874,48 @@ class FishWidget(QWidget):
                 float(screen.x() + screen.width() - self.width() - 5),
                 float(self.y()),
             )
+        elif action == "screen_peek":
+            # Autonomous screen glance — peek at what the user is doing
+            try:
+                from core.system_monitor import _get_active_window_title, _get_active_process_name
+                title = _get_active_window_title()
+                proc = _get_active_process_name()
+                self._reviewer.peek(title, proc)
+            except Exception:
+                pass
+        elif action == "play_anim":
+            # Play a complex animation sequence from the library
+            self._play_animation_sequence(message)
+
+    def _play_animation_sequence(self, anim_name: str):
+        """Play a named animation from the animation library."""
+        from core.animation_library import ANIMATION_LIBRARY
+        seq = ANIMATION_LIBRARY.get(anim_name)
+        if seq is None:
+            return
+        # Don't interrupt an already playing sequence
+        if self.animator.is_playing_sequence:
+            return
+        # Don't play if dragging or talking
+        if self._is_dragging or self._tts.is_speaking:
+            return
+        self.animator.play_sequence(seq)
 
     def _idle_behavior(self):
         """Rich idle behaviors — ambient life + active idle + deep idle."""
         import random
         if self._is_dragging or self._tts.is_speaking or self._voice.is_recording:
             return
+        # Don't override animation library sequences
+        if self.animator.is_playing_sequence:
+            return
 
-        # Sleepy behavior — drowsy but not dead
+        # Sleepy behavior — truly asleep, minimal activity
         if self.emotions.dominant_emotion() == "sleepy":
             r = random.random()
             if r < 0.15:
                 self.animator.trigger_slow_blink()
-            elif r < 0.22:
-                # Occasionally stir — reduces sleepiness naturally
-                self.emotions.values["sleepy"] = max(0.1, self.emotions.values["sleepy"] - 0.05)
-            elif r < 0.28:
-                self.animator.trigger_look_around()
-            # Movement handled by MovementEngine (SETTLE state when sleepy)
+            # No looking around or sleepiness reduction — fish is sleeping
             return
 
         idle_secs = time.monotonic() - self._last_interaction_time
@@ -1976,6 +2072,14 @@ class FishWidget(QWidget):
     def _unprompted_thought(self):
         """Fish spontaneously says something — the soul of the pet."""
         import random
+        # Don't talk while sleeping
+        if self.emotions.dominant_emotion() == "sleepy":
+            self._reschedule_unprompted()
+            return
+        # Don't interrupt active chat conversation
+        if self._is_user_chatting:
+            self._reschedule_unprompted()
+            return
         # Don't interrupt if busy
         if self._tts.is_speaking or self._voice.is_recording:
             self._reschedule_unprompted()
@@ -2817,6 +2921,8 @@ class FishWidget(QWidget):
         """Check current foreground app and react with relationship-gated lines."""
         if not self._app_awareness:
             return
+        if self._is_user_chatting:
+            return  # don't interrupt an active conversation
         try:
             from core.system_monitor import _get_active_process_name, _get_active_window_title
             proc = _get_active_process_name()
@@ -2887,9 +2993,13 @@ class FishWidget(QWidget):
         import random
         if not self._jokes_enabled:
             return
+        if self.emotions.dominant_emotion() == "sleepy":
+            return
         if self._tts.is_speaking or self._voice.is_recording:
             return
         if self._quiet_mode:
+            return
+        if self._is_user_chatting:
             return
         joke = get_random_joke_or_fact()
         self._say(joke)
@@ -2901,12 +3011,18 @@ class FishWidget(QWidget):
     # Intelligence: Chat Window
     # ------------------------------------------------------------------
 
+    @property
+    def _is_user_chatting(self) -> bool:
+        """True when the chat window is open and the user is actively engaged."""
+        return (self._chat_window is not None
+                and self._chat_window.isVisible())
+
     def _open_chat_window(self):
         """Open the text chat window."""
         from widget.chat_window import ChatWindow
-        if self._chat_window is None or not self._chat_window.isVisible():
+        if self._chat_window is None:
             self._chat_window = ChatWindow(self._chat, self)
+        if not self._chat_window.isVisible():
             self._chat_window.show()
-        else:
-            self._chat_window.raise_()
-            self._chat_window.activateWindow()
+        self._chat_window.raise_()
+        self._chat_window.activateWindow()

@@ -5,7 +5,7 @@ Persistent conversation, command execution, and memory.
 """
 
 import time, datetime
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeyEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
@@ -192,11 +192,14 @@ class SystemBubble(QLabel):
 class ChatWindow(QDialog):
     """Text-based chat window for messaging Little Fish."""
 
+    _api_result_ready = pyqtSignal(str)  # emitted from background thread
+
     def __init__(self, chat_backend, fish_widget, parent=None):
         super().__init__(parent)
         self._chat = chat_backend
         self._fish = fish_widget
         self._waiting_for_reply = False
+        self._api_result_ready.connect(self._on_api_result)
 
         # Get fish name from profile
         self._fish_name = "Little Fish"
@@ -425,8 +428,10 @@ class ChatWindow(QDialog):
         # Try command parser first (so commands work in chat too)
         # Skip conversational patterns — those should go to the AI in chat
         _CHAT_PASSTHROUGH = {"greeting", "status", "confirm_yes", "pin"}
-        result = self._fish._cmd_parser.parse(text)
+        result = self._fish._cmd_parser.parse(text, from_chat=True)
         if result is not None and result.action not in _CHAT_PASSTHROUGH:
+            # Persist user message to AI history so follow-up conversation has context
+            self._persist_to_history("user", text)
             # Execute the command through the fish widget
             self._execute_command(result)
             return
@@ -519,6 +524,8 @@ class ChatWindow(QDialog):
             self._fish._start_screen_review(focus)
             self._add_system_bubble("Reviewing your screen...")
             return
+        elif action == "point_at_screen":
+            result.response = self._fish._point_at_last_mention()
         elif action == "pomodoro":
             self._fish._start_pomodoro()
             result.response = "25-minute pomodoro started. Focus!"
@@ -618,6 +625,7 @@ class ChatWindow(QDialog):
         if result.response:
             self._add_fish_message(result.response)
             self._fish._tts.say(result.response)
+            self._persist_to_history("assistant", result.response)
         else:
             # For actions that already executed (open_app, open_url, etc.)
             self._add_system_bubble(f"Done!")
@@ -667,20 +675,35 @@ class ChatWindow(QDialog):
             except Exception as e:
                 text = f"Error: {str(e)[:100]}"
 
-            # Post result back to UI thread
-            def _show(t=text):
-                self._add_fish_message(t)
-                self._fish._tts.say(t)
-            QTimer.singleShot(0, _show)
+            # Post result back to UI thread via signal
+            self._api_result_ready.emit(text)
 
         threading.Thread(target=_work, daemon=True).start()
         self._add_system_bubble("Working on it...")
+
+    def _on_api_result(self, text: str):
+        """Handle API result on the main thread (connected via signal)."""
+        self._add_fish_message(text)
+        self._fish._tts.say(text)
+        self._persist_to_history("assistant", text)
 
     def _on_response(self, text: str):
         """Called when chat backend generates a response."""
         self._typing.stop()
         self._waiting_for_reply = False
         # Message is already synced by FishWidget._on_chat_response -> _say -> _sync_to_chat
+
+    def _persist_to_history(self, role: str, text: str):
+        """Add a message to AI chat history so follow-ups have context."""
+        from core.intelligence import save_chat_history
+        hist = self._chat._history
+        if not hist or hist[-1].get("content") != text:
+            hist.append({"role": role, "content": text})
+        # Trim to keep history manageable
+        if len(hist) > 20:
+            self._chat._history = hist[-20:]
+            hist = self._chat._history
+        save_chat_history(hist)
 
     def _add_user_message(self, text: str):
         bubble = MessageBubble(text, is_user=True, fish_name=self._fish_name)

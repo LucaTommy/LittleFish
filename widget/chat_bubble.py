@@ -137,6 +137,22 @@ class ChatBubble(QWidget):
         self._showing = False
         self.hide()
 
+    def update_anchor(self, anchor: QPoint):
+        """Reposition an already-visible bubble to track the fish."""
+        if not self._showing:
+            return
+        total_w = self.width()
+        total_h = self.height()
+        x = anchor.x() - total_w // 2
+        y = anchor.y() - total_h - 4
+        # Keep on screen
+        screen = self.screen()
+        if screen:
+            sg = screen.availableGeometry()
+            x = max(sg.left() + 2, min(x, sg.right() - total_w - 2))
+            y = max(sg.top() + 2, y)
+        self.move(x, y)
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
