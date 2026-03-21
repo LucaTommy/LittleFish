@@ -680,7 +680,7 @@ class ChatWindow(QDialog):
         """Called when chat backend generates a response."""
         self._typing.stop()
         self._waiting_for_reply = False
-        self._add_fish_message(text)
+        # Message is already synced by FishWidget._on_chat_response -> _say -> _sync_to_chat
 
     def _add_user_message(self, text: str):
         bubble = MessageBubble(text, is_user=True, fish_name=self._fish_name)

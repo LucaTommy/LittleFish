@@ -1245,17 +1245,13 @@ class FishWidget(QWidget):
 
     def _on_chat_response(self, text: str):
         """Called when AI chat generates a response."""
-        self._show_bubble(text)
+        self._say(text)
         self._tts.say(text)
         self.emotions.spike("happy", 0.1)
         self.animator.queue_reaction(ReactionType.BOUNCE)
         self._shared_state.record_phrase()
         self._relationship.add_points("conversation")
         self._behavior_engine.record_interaction()
-        # Chat window handles sync via its own response_ready listener,
-        # but if it doesn't exist yet (unprompted speech), we must sync manually.
-        if self._chat_window is None:
-            self._sync_to_chat(text)
 
     def _get_chat_context(self) -> dict:
         """Return live context dict for the AI system prompt."""
@@ -1647,7 +1643,7 @@ class FishWidget(QWidget):
                     self.animator.spawn_particle("lightning")
 
         # Sleep bubble when sleepy
-        if emo == "sleepy" and val > 0.7:
+        if emo == "sleepy" and val > 0.3:
             if random.random() < 0.5:
                 self.animator.spawn_particle("sleep_bubble")
 

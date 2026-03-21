@@ -162,12 +162,8 @@ class MovementEngine:
         sleepy_val = self._emo.values.get("sleepy", 0)
         if sleepy_val >= 0.7:
             return True
-        if sleepy_val <= 0.15:
-            return False
-        # Also asleep when sleepy is the dominant emotion
-        return sleepy_val >= max(
-            v for k, v in self._emo.values.items() if k != "sleepy"
-        )
+        # Match the visual: if sleepy face is showing, stop movement
+        return self._emo.dominant_emotion() == "sleepy"
 
     def notify_stimulus(self, x: int, y: int):
         """Something interesting appeared at *(x, y)* — maybe dash over."""
@@ -219,10 +215,7 @@ class MovementEngine:
         # This matches the visual (sleepy face) so the fish doesn't appear to
         # walk while looking asleep.
         sleepy_val = self._emo.values.get("sleepy", 0)
-        is_sleepy_dominant = sleepy_val >= max(
-            v for k, v in self._emo.values.items() if k != "sleepy"
-        ) if sleepy_val > 0.15 else False
-        if sleepy_val >= 0.7 or is_sleepy_dominant:
+        if sleepy_val >= 0.7 or self._emo.dominant_emotion() == "sleepy":
             if self._state != MovementState.IDLE:
                 self._enter(MovementState.IDLE)
             self._vx = 0.0
