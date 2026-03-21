@@ -405,6 +405,23 @@ class UpdateChecker:
         self._latest_download_url: str = ""
         self._latest_version: str = ""
 
+    @staticmethod
+    def _gh_headers() -> dict:
+        """Build headers for GitHub API, including auth token if available."""
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "LittleFishLauncher",
+        }
+        # Support private repos via a personal access token stored in settings
+        try:
+            cfg = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+            token = cfg.get("github_token", "").strip()
+            if token:
+                headers["Authorization"] = f"token {token}"
+        except (OSError, json.JSONDecodeError):
+            pass
+        return headers
+
     def check(self):
         """Check for updates in a background thread."""
         thread = threading.Thread(target=self._check_thread, daemon=True)
@@ -419,8 +436,8 @@ class UpdateChecker:
         current = _read_version().get("version", "0.0.0")
         try:
             api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            req = Request(api_url, headers={"Accept": "application/vnd.github.v3+json",
-                                            "User-Agent": "LittleFishLauncher"})
+            headers = self._gh_headers()
+            req = Request(api_url, headers=headers)
             with urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
 
@@ -446,12 +463,21 @@ class UpdateChecker:
                 self.signals.update_available.emit(tag, changelog, download_url)
             else:
                 self.signals.no_update.emit()
-        except (URLError, OSError, json.JSONDecodeError, KeyError):
-            self.signals.no_update.emit()
+        except (URLError, OSError, json.JSONDecodeError, KeyError) as e:
+            # Emit error message so user can see why check failed
+            err_str = str(e)
+            if "404" in err_str:
+                self.signals.download_error.emit(
+                    "Repo not accessible — make it public or add github_token to settings"
+                )
+            else:
+                self.signals.download_error.emit(f"Update check failed: {err_str[:80]}")
 
     def _download_thread(self, url: str):
         try:
-            req = Request(url, headers={"User-Agent": "LittleFishLauncher"})
+            headers = self._gh_headers()
+            headers["Accept"] = "application/octet-stream"
+            req = Request(url, headers=headers)
             with urlopen(req, timeout=60) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
@@ -915,6 +941,9 @@ class DashboardWindow(QWidget):
         self._rollback_btn.setVisible((PROJECT_ROOT / "_backup").exists())
         self._rollback_btn.clicked.connect(self._on_rollback)
         update_btn_row.addWidget(self._rollback_btn)
+        self._check_update_btn = QPushButton("Check Now")
+        self._check_update_btn.clicked.connect(self.check_for_updates)
+        update_btn_row.addWidget(self._check_update_btn)
         update_btn_row.addStretch()
         update_layout.addLayout(update_btn_row)
         self._update_group.setLayout(update_layout)
