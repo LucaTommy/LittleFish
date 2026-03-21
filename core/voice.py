@@ -28,9 +28,9 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
 MAX_RECORD_SECONDS = 15
-SILENCE_THRESHOLD = 300       # RMS below this = silence
+SILENCE_THRESHOLD = 100       # RMS below this = silence
 SILENCE_DURATION = 1.0        # seconds of silence to stop recording
-VAD_THRESHOLD = 300           # RMS above this = voice activity
+VAD_THRESHOLD = 100           # RMS above this = voice activity
 VAD_CONFIRM_CHUNKS = 2        # consecutive loud chunks to confirm speech
 CONVERSATION_TIMEOUT = 10.0   # seconds of silence before leaving active mode
 
@@ -55,13 +55,13 @@ _WAKE_WORDS = ("hey little fish", "hey fish", "little fish",
                "fish", "pesciolino")
 
 # Energy gate thresholds for _should_transcribe()
-MIN_ENERGY_RMS = 200          # skip audio quieter than this (silence/noise)
-MIN_AUDIO_SECS = 0.5          # skip audio shorter than this (accidental blip)
+MIN_ENERGY_RMS = 50           # skip audio quieter than this (silence/noise)
+MIN_AUDIO_SECS = 0.3          # skip audio shorter than this (accidental blip)
 
 # Known Whisper hallucination patterns (common ghost outputs on silence/noise)
 import re as _re
 _HALLUCINATION_RE = _re.compile(
-    r'^[\s.!?,;:"\'-…]*$'          # only punctuation / whitespace / ellipsis
+    r'^[\s.!?,;:"\'\-…]*$'         # only punctuation / whitespace / ellipsis
     r'|^.{0,2}$'                    # 1-2 chars (random junk)
     r'|[\u2E80-\u9FFF]'             # CJK characters (e.g. 謝謝)
     r'|[\u3040-\u30FF]'             # Japanese kana
@@ -262,6 +262,7 @@ class VoiceRecorder(QObject):
         prebuffer = []  # rolling buffer of recent chunks for pre-buffering
         PREBUFFER_CHUNKS = 5  # keep last ~500ms
         prev_state = self._conv_state
+        _rms_log_counter = 0  # periodic RMS logging
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
                                 dtype=DTYPE, blocksize=chunk_size) as stream:
@@ -289,6 +290,11 @@ class VoiceRecorder(QObject):
 
                     data, _ = stream.read(chunk_size)
                     rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+
+                    # Log RMS every ~2 seconds so we can see what the mic reads
+                    _rms_log_counter += 1
+                    if _rms_log_counter % 20 == 0:
+                        print(f"[VAD] mic rms={rms:.0f} (threshold={VAD_THRESHOLD})")
 
                     # During TTS playback, keep reading (stream alive) but
                     # don't accumulate speaker audio into prebuffer
