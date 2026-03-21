@@ -33,17 +33,40 @@ class CommandResult:
 # ---------------------------------------------------------------------------
 
 PATTERNS = [
-    # "open youtube [query]"
+    # --- YouTube search (EN + IT, must be before generic "open youtube") ---
+    (r"(?:open|boot\s+up|launch|start)\s+youtube\s+(?:and\s+)?(?:play|put\s+on|search|find)\s+(.+)",
+     lambda m: _youtube_search(m.group(1).strip())),
+    (r"(?:play|put\s+on|search)\s+(.+?)\s+on\s+youtube",
+     lambda m: _youtube_search(m.group(1).strip())),
+    (r"(?:apri|avvia)\s+youtube\s+(?:e\s+)?(?:metti|cerca|trova|play)\s+(.+)",
+     lambda m: _youtube_search(m.group(1).strip())),
+    (r"metti\s+(.+?)\s+su\s+youtube",
+     lambda m: _youtube_search(m.group(1).strip())),
+    # Fallback: "open youtube lofi" / "search youtube lofi"
     (r"(?:open|play|search)\s+youtube\s+(.+)",
-     lambda m: _open_youtube(m.group(1))),
+     lambda m: _youtube_search(m.group(1))),
+
+    # --- Spotify search (EN + IT, must be before generic "open spotify") ---
+    (r"(?:open|launch|start)\s+spotify\s+(?:and\s+)?(?:play|put\s+on|search)\s+(.+)",
+     lambda m: _spotify_search(m.group(1).strip())),
+    (r"(?:play|put\s+on)\s+(.+?)\s+on\s+spotify",
+     lambda m: _spotify_search(m.group(1).strip())),
+    (r"(?:apri|avvia)\s+spotify\s+(?:e\s+)?(?:metti|cerca|play)\s+(.+)",
+     lambda m: _spotify_search(m.group(1).strip())),
+    (r"metti\s+(.+?)\s+su\s+spotify",
+     lambda m: _spotify_search(m.group(1).strip())),
 
     # "go to [url]"
     (r"(?:go\s+to|open|navigate\s+to)\s+(https?://\S+)",
      lambda m: _open_url(m.group(1))),
 
-    # "open [website]" — common sites
-    (r"(?:open|go\s+to)\s+(youtube|google|github|reddit|twitter|twitch|spotify|netflix|discord)(?:\.com)?",
-     lambda m: _open_url(f"https://{m.group(1)}.com")),
+    # "open [website]" — common sites / IT: "apri google" / "vai su reddit"
+    (r"(?:open|apri|vai\s+su|go\s+to)\s+(google|reddit|github|youtube|twitter|instagram|wikipedia|stackoverflow|twitch|spotify|netflix|discord)(?:\s*\.com)?\b",
+     lambda m: _open_website(m.group(1).strip())),
+
+    # "switch to [app]" / IT: "passa a chrome"
+    (r"(?:switch\s+to|go\s+to|passa\s+a)\s+(vscode|visual\s+studio|chrome|firefox|spotify|discord|telegram|whatsapp)\b",
+     lambda m: _switch_to_app(m.group(1).strip())),
 
     # "open [file] from [folder]" / "open attention from downloads"
     (r"open\s+(?:the\s+)?(.+?)\s+(?:from|in)\s+(downloads?|desktop|documents?|pictures?|music|videos?)",
@@ -82,21 +105,25 @@ PATTERNS = [
     (r"close\s+(?:the\s+)?(.+)",
      lambda m: _close_app(m.group(1).strip())),
 
-    # "play [game name]" / "let's play" / "play a game"
-    (r"(?:play|let'?s\s+play)\s+(?:a\s+)?(?:game\s+)?(?:of\s+)?(.+)",
+    # "play [specific game]" / "let's play snake" — must name a game
+    (r"\bplay\s+(?:a\s+)?(?:game\s+of\s+)?(?:the\s+)?(snake|pong|flappy|breakout|minesweeper|memory|trivia|whack|reaction|typing|catch)\b",
      lambda m: CommandResult("play_game", m.group(1).strip(),
                               f"Let's play {m.group(1).strip()}!")),
 
-    (r"(?:play\s+a\s+game|let'?s\s+play)",
+    (r"(?:play\s+a\s+game|let'?s\s+play(?:\s+a\s+game)?|giochiamo)",
      lambda m: CommandResult("game_picker", "", "What should we play?")),
 
     # "hobbies" / "show hobbies" / "do a hobby" / "do something fun"
     (r"(?:show\s+)?hobbies|do\s+(?:a\s+)?hobb(?:y|ies)|do\s+something\s+fun",
      lambda m: CommandResult("hobby_picker", "", "Let me show you what I can do!")),
 
-    # "volume up/down"
+    # "volume up/down" / IT: "alza/abbassa il volume"
     (r"(?:turn\s+)?volume\s+(up|down)",
      lambda m: _volume(m.group(1))),
+    (r"alza\s+(?:il\s+)?volume",
+     lambda m: _volume("up")),
+    (r"abbassa\s+(?:il\s+)?volume",
+     lambda m: _volume("down")),
 
     # "take a break" / "pause" / "rest"
     (r"(?:take\s+a\s+break|\bpause\b|\brest\b|\bchill\b)",
@@ -120,9 +147,13 @@ PATTERNS = [
     (r"(?:hello|hey|hi)\b",
      lambda m: CommandResult("greeting", "hello", "Hey there!")),
 
-    # "what time is it"
-    (r"what(?:'s|\s+is)\s+the\s+time",
+    # "what time is it" / IT: "che ore sono" / "che ora è"
+    (r"what(?:'s|\s+is)\s+the\s+time|che\s+ore\s+sono|che\s+ora\s+[eè]",
      lambda m: _get_time()),
+
+    # "what date is it" / "what day is it" / IT: "che giorno è"
+    (r"what(?:'s|\s+is)\s+the\s+date|what\s+day\s+is\s+it|che\s+giorno\s+[eè]",
+     lambda m: _get_date()),
 
     # "how are you"
     (r"how\s+are\s+you",
@@ -136,9 +167,13 @@ PATTERNS = [
     (r"(?:search\s+(?:for\s+)?|google\s+)(.+)",
      lambda m: _google_search(m.group(1).strip())),
 
-    # "open file explorer" / "open explorer" / "open files"
-    (r"open\s+(?:file\s+)?explorer|open\s+files",
+    # "open file explorer" / "open explorer" / "open files" / IT: "apri file" / "apri cartella"
+    (r"(?:open|apri)\s+(?:file\s+)?(?:explorer|files|cartella|file)\b",
      lambda m: _open_file_explorer()),
+
+    # "open downloads" / "open desktop" / etc / IT: "apri download"
+    (r"(?:open|apri)\s+(downloads?|desktop|documents?|documenti|scrivania)\b",
+     lambda m: _open_folder(m.group(1).strip())),
 
     # "set a timer for X minutes/seconds"
     (r"(?:set\s+(?:a\s+)?timer\s+(?:for\s+)?)(\d+)\s*(min(?:ute)?s?|sec(?:ond)?s?|hour(?:s)?)",
@@ -160,8 +195,8 @@ PATTERNS = [
     (r"(?:set\s+(?:an?\s+)?)?(?:alarm|wake\s+(?:me\s+)?up)\s+(?:at|for)\s+(.+)",
      lambda m: CommandResult("set_alarm", m.group(1).strip(), "")),
 
-    # "lock screen" / "lock"
-    (r"lock\s+(?:the\s+)?(?:screen|computer|pc)",
+    # "lock screen" / "lock" / IT: "blocca lo schermo"
+    (r"lock(?:\s+(?:the\s+)?(?:screen|computer|pc))?|blocca(?:\s+lo\s+schermo)?",
      lambda m: _lock_screen()),
 
     # "shutdown" / "shut down" / "restart" / "reboot"
@@ -173,9 +208,13 @@ PATTERNS = [
     (r"^yes$",
      lambda m: CommandResult("confirm_yes", "", "Okay!")),
 
-    # "mute" / "unmute"
+    # "mute" / "unmute" / IT: "silenzia" / "zitto" / "riattiva audio"
     (r"\b(mute|unmute)\b",
      lambda m: _toggle_mute(m.group(1))),
+    (r"\b(?:silence|zitto|silenzia)\b",
+     lambda m: _toggle_mute("mute")),
+    (r"\b(?:unsilence|riattiva(?:\s+audio)?)\b",
+     lambda m: _toggle_mute("unmute")),
 
     # --- Todo list commands ---
     (r"(?:add\s+(?:a\s+)?todo|add\s+to\s+(?:my\s+)?(?:to-?do|list))\s+(.+)",
@@ -209,8 +248,10 @@ PATTERNS = [
     # Phase 1: System Control (new commands)
     # ===================================================================
 
-    # "set volume to 50%" / "volume 30 percent"
-    (r"(?:set\s+)?volume\s+(?:to\s+)?(\d+)\s*%?",
+    # "set volume to 50%" / "volume 30 percent" / IT: "metti il volume a 50"
+    (r"(?:set\s+)?(?:volume|vol)\s+(?:to\s+)?(\d+)(?:\s+percent)?\s*%?",
+     lambda m: _set_volume_pct(int(m.group(1)))),
+    (r"(?:alza|abbassa|metti)\s+(?:il\s+)?(?:volume|vol)\s+(?:a\s+)?(\d+)",
      lambda m: _set_volume_pct(int(m.group(1)))),
 
     # "brightness up/down"
@@ -221,8 +262,8 @@ PATTERNS = [
     (r"(?:empty|clear)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)",
      lambda m: _empty_recycle_bin()),
 
-    # "show desktop" / "minimize all" / "minimize everything"
-    (r"(?:show\s+(?:the\s+)?desktop|minimize\s+(?:all|everything))",
+    # "show desktop" / "minimize all" / IT: "mostra desktop" / "minimizza tutto"
+    (r"(?:show\s+(?:the\s+)?desktop|minimize\s+(?:all|everything)|mostra\s+(?:il\s+)?desktop|minimizza\s+tutto)",
      lambda m: _show_desktop()),
 
     # "sleep" / "hibernate" (power action) - distinct from "rest/chill"
@@ -440,16 +481,20 @@ PATTERNS = [
     # Phase 6: Media Control
     # ===================================================================
 
-    # "play" / "pause" / "play/pause"
+    # "play" / "pause" / "play/pause" / IT: "pausa" / "riprendi"
     (r"^(?:play|pause|play\s*/?\s*pause)$",
      lambda m: _media_key("play_pause")),
+    (r"\b(?:pausa|stop\s+music|pause\s+music)\b",
+     lambda m: _media_key("play_pause")),
+    (r"\b(?:resume|riprendi|play\s+music)\b",
+     lambda m: _media_key("play_pause")),
 
-    # "next track" / "next song" / "skip"
-    (r"(?:next\s+(?:track|song)|skip(?:\s+(?:track|song))?)",
+    # "next track" / "next song" / "skip" / IT: "canzone successiva" / "avanti"
+    (r"(?:next(?:\s+(?:track|song))?|skip(?:\s+(?:track|song))?|canzone\s+successiva|avanti)",
      lambda m: _media_key("next")),
 
-    # "previous track" / "previous song" / "go back"
-    (r"(?:prev(?:ious)?\s+(?:track|song)|go\s+back\s+(?:a\s+)?(?:track|song))",
+    # "previous track" / "previous song" / "go back" / IT: "canzone precedente" / "indietro"
+    (r"(?:prev(?:ious)?(?:\s+(?:track|song))?|go\s+back(?:\s+(?:a\s+)?(?:track|song))?|canzone\s+precedente|indietro)",
      lambda m: _media_key("prev")),
 
     # "what's playing" / "what song is this"
@@ -615,6 +660,33 @@ class CommandParser:
                      "greeting", "hello", f"Hey! You called me {fn}?"))
             )
 
+    # Words that signal casual/conversational speech, not a command
+    _CASUAL_INDICATORS = frozenset({
+        "your", "while", "when", "with", "around", "outside",
+        "hobby", "yourself", "about", "because", "would", "could",
+        "should", "maybe", "probably", "think", "feel",
+    })
+
+    def _is_casual_near_trigger(self, text: str, match_start: int, match_end: int) -> bool:
+        """Return True if a casual indicator word appears within 3 words of the match."""
+        words = text.split()
+        # Find the word indices that overlap with the match span
+        char_pos = 0
+        match_word_indices = set()
+        for i, w in enumerate(words):
+            word_end = char_pos + len(w)
+            if char_pos < match_end and word_end > match_start:
+                match_word_indices.add(i)
+            char_pos = word_end + 1  # +1 for space
+        if not match_word_indices:
+            return False
+        lo = max(0, min(match_word_indices) - 3)
+        hi = min(len(words), max(match_word_indices) + 4)
+        for i in range(lo, hi):
+            if words[i].lower().strip(".,!?") in self._CASUAL_INDICATORS:
+                return True
+        return False
+
     def parse(self, text: str, from_chat: bool = False) -> Optional[CommandResult]:
         """Parse a transcribed voice command. Returns None if nothing matched.
         
@@ -641,6 +713,11 @@ class CommandParser:
         _DANGEROUS_IN_CHAT = {
             "file", "confirm_power",
         }
+        # Actions that should be skipped if a casual indicator is nearby
+        _CASUAL_SENSITIVE = {
+            "play_game", "game_picker", "open_app", "close_app",
+            "rest_mode", "hide", "volume", "media",
+        }
         for pattern, handler in PATTERNS:
             m = re.search(pattern, clean)
             if m:
@@ -657,6 +734,11 @@ class CommandParser:
                         continue
                     return result
                 result = handler(m)
+                # Casual indicator guard: if sentence sounds conversational
+                # near the trigger, skip to chat
+                if result.action in _CASUAL_SENSITIVE and word_count > 3:
+                    if self._is_casual_near_trigger(clean, m.start(), m.end()):
+                        continue
                 return result
 
         # Groq LLM fallback — skip in chat context (chat routes to AI directly)
@@ -1792,3 +1874,111 @@ def _random_number(low_str: Optional[str], high_str: Optional[str]) -> CommandRe
     high = int(high_str) if high_str else 100
     result = random.randint(min(low, high), max(low, high))
     return CommandResult("fun", "random", f"{result}.")
+
+
+# ---------------------------------------------------------------------------
+# YouTube / Spotify search helpers
+# ---------------------------------------------------------------------------
+
+def _youtube_search(query: str) -> CommandResult:
+    url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+    webbrowser.open(url)
+    return CommandResult("youtube_search", query, f"Searching YouTube for {query}!")
+
+
+def _spotify_search(query: str) -> CommandResult:
+    webbrowser.open(f"spotify:search:{query}")
+    return CommandResult("spotify_search", query, f"Searching Spotify for {query}!")
+
+
+# ---------------------------------------------------------------------------
+# Open website / folder / switch app helpers
+# ---------------------------------------------------------------------------
+
+_SITES = {
+    "google": "https://google.com",
+    "reddit": "https://reddit.com",
+    "github": "https://github.com",
+    "youtube": "https://youtube.com",
+    "twitter": "https://twitter.com",
+    "instagram": "https://instagram.com",
+    "wikipedia": "https://wikipedia.org",
+    "stackoverflow": "https://stackoverflow.com",
+    "twitch": "https://twitch.tv",
+    "spotify": "https://open.spotify.com",
+    "netflix": "https://netflix.com",
+    "discord": "https://discord.com",
+}
+
+
+def _open_website(site: str) -> CommandResult:
+    url = _SITES.get(site.lower(), f"https://{site}.com")
+    webbrowser.open(url)
+    return CommandResult("open_url", url, f"Opening {site}!")
+
+
+def _open_folder(name: str) -> CommandResult:
+    """Open a user folder by name, supporting Italian names."""
+    import os
+    _FOLDERS = {
+        "downloads": os.path.expanduser("~/Downloads"),
+        "download": os.path.expanduser("~/Downloads"),
+        "desktop": os.path.expanduser("~/Desktop"),
+        "documents": os.path.expanduser("~/Documents"),
+        "document": os.path.expanduser("~/Documents"),
+        "documenti": os.path.expanduser("~/Documents"),
+        "scrivania": os.path.expanduser("~/Desktop"),
+    }
+    path = _FOLDERS.get(name.lower(), os.path.expanduser("~"))
+    if os.path.isdir(path):
+        subprocess.Popen(f'explorer "{path}"')
+        return CommandResult("open_app", path, f"Opening {name}!")
+    return CommandResult("open_app", name, f"Couldn't find {name} folder.", success=False)
+
+
+_APP_PROCESS_NAMES = {
+    "vscode": "Code.exe",
+    "visual studio": "Code.exe",
+    "chrome": "chrome.exe",
+    "firefox": "firefox.exe",
+    "spotify": "Spotify.exe",
+    "discord": "Discord.exe",
+    "telegram": "Telegram.exe",
+    "whatsapp": "WhatsApp.exe",
+}
+
+
+def _switch_to_app(app_name: str) -> CommandResult:
+    """Bring an app's window to the foreground."""
+    process_name = _APP_PROCESS_NAMES.get(app_name.lower())
+    if not process_name:
+        return CommandResult("switch_app", app_name,
+                             f"Don't know how to switch to {app_name}.", success=False)
+    try:
+        import win32gui
+        target_pid = None
+        for proc in psutil.process_iter(["name", "pid"]):
+            if proc.info["name"] and proc.info["name"].lower() == process_name.lower():
+                target_pid = proc.info["pid"]
+                break
+        if not target_pid:
+            return CommandResult("switch_app", app_name,
+                                 f"{app_name} doesn't seem to be open.", success=False)
+
+        found_hwnd = [None]
+
+        def callback(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                _, pid = win32gui.GetWindowThreadProcessId(hwnd)
+                if pid == target_pid:
+                    found_hwnd[0] = hwnd
+
+        win32gui.EnumWindows(callback, None)
+        if found_hwnd[0]:
+            win32gui.SetForegroundWindow(found_hwnd[0])
+            return CommandResult("switch_app", app_name, f"Switching to {app_name}!")
+        return CommandResult("switch_app", app_name,
+                             f"Found {app_name} but no visible window.", success=False)
+    except Exception as e:
+        return CommandResult("switch_app", app_name,
+                             f"Couldn't switch to {app_name}.", success=False)
