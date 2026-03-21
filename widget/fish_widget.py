@@ -1256,7 +1256,10 @@ class FishWidget(QWidget):
         self._shared_state.record_phrase()
         self._relationship.add_points("conversation")
         self._behavior_engine.record_interaction()
-        # NOTE: chat window adds its own messages via _on_response (connected to response_ready)
+        # Chat window handles sync via its own response_ready listener,
+        # but if it doesn't exist yet (unprompted speech), we must sync manually.
+        if self._chat_window is None:
+            self._sync_to_chat(text)
 
     def _get_chat_context(self) -> dict:
         """Return live context dict for the AI system prompt."""

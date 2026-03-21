@@ -159,7 +159,15 @@ class MovementEngine:
         self._paused = False
 
     def _is_deep_sleep(self) -> bool:
-        return self._emo.values.get("sleepy", 0) >= 0.7
+        sleepy_val = self._emo.values.get("sleepy", 0)
+        if sleepy_val >= 0.7:
+            return True
+        if sleepy_val <= 0.15:
+            return False
+        # Also asleep when sleepy is the dominant emotion
+        return sleepy_val >= max(
+            v for k, v in self._emo.values.items() if k != "sleepy"
+        )
 
     def notify_stimulus(self, x: int, y: int):
         """Something interesting appeared at *(x, y)* — maybe dash over."""
@@ -207,8 +215,14 @@ class MovementEngine:
         self._state_time += dt
         self._cooldown = max(0.0, self._cooldown - dt)
 
-        # Deep sleep override — always checked, ignores cooldown
-        if self._emo.values.get("sleepy", 0) >= 0.7:
+        # Sleep override — stop movement when sleepy is the dominant emotion.
+        # This matches the visual (sleepy face) so the fish doesn't appear to
+        # walk while looking asleep.
+        sleepy_val = self._emo.values.get("sleepy", 0)
+        is_sleepy_dominant = sleepy_val >= max(
+            v for k, v in self._emo.values.items() if k != "sleepy"
+        ) if sleepy_val > 0.15 else False
+        if sleepy_val >= 0.7 or is_sleepy_dominant:
             if self._state != MovementState.IDLE:
                 self._enter(MovementState.IDLE)
             self._vx = 0.0

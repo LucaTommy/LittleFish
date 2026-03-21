@@ -41,6 +41,7 @@ def build_fish():
         "--hidden-import", "screen_brightness_control",
         "--hidden-import", "dateutil",
         "--hidden-import", "dateutil.parser",
+        "--hidden-import", "mss",
         str(ROOT / "main.py"),
     ]
     print("Building Little Fish...")
