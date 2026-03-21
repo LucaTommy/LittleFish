@@ -994,6 +994,9 @@ class FishWidget(QWidget):
         games_action = self._menu.addAction("Games")
         games_action.triggered.connect(self._open_games)
 
+        hobbies_action = self._menu.addAction("Hobbies")
+        hobbies_action.triggered.connect(self._open_hobbies)
+
         chat_action = self._menu.addAction("Chat")
         chat_action.triggered.connect(self._open_chat_window)
 
@@ -1229,6 +1232,10 @@ class FishWidget(QWidget):
         elif result.action == "game_picker":
             self._open_games()
             result.response = "Here are the games!"
+
+        elif result.action == "hobby_picker":
+            self._open_hobbies()
+            result.response = "Pick a hobby!"
 
         elif result.action == "screen_review":
             focus = result.target if result.target else None
@@ -2246,6 +2253,129 @@ class FishWidget(QWidget):
             action = menu.addAction(f"🎮  {label}")
             action.setToolTip(desc)
             action.triggered.connect(lambda checked, gc=game_cls: self._start_game(gc))
+        menu.exec(self.mapToGlobal(QPoint(self.width(), 0)))
+        self._last_interaction_time = time.monotonic()
+
+    def _open_hobbies(self):
+        """Show a hobby picker menu with all animations organized by category."""
+        from core.animation_library import ANIMATION_LIBRARY
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1A1A2E;
+                color: #E0E0E0;
+                border: 2px solid #7EC8E3;
+                border-radius: 8px;
+                padding: 6px;
+                font-size: 13px;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #5BA8C8;
+                color: #1A1A2E;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+
+        # Nice display names for animation keys
+        _DISPLAY_NAMES = {
+            "coffee_sip": "Sip Coffee",
+            "yawn_stretch": "Yawn & Stretch",
+            "eat_snack": "Eat a Snack",
+            "read_book": "Read a Book",
+            "nap_blanket": "Nap with Blanket",
+            "brush_teeth": "Brush Teeth",
+            "morning_routine": "Morning Routine",
+            "big_stretch": "Big Stretch",
+            "monday_drama": "Monday Drama",
+            "rain_umbrella": "Umbrella in Rain",
+            "sunny_shades": "Sunglasses Vibes",
+            "cold_shiver": "Shiver in Cold",
+            "heat_melt": "Melt in Heat",
+            "dramatic_tear": "Dramatic Tear",
+            "laugh_fall": "Laugh & Fall Over",
+            "blush": "Blush",
+            "hide_face": "Hide Face",
+            "proud_puff": "Proud Puff",
+            "existential_stare": "Existential Stare",
+            "victory_pose": "Victory Pose",
+            "sulk": "Sulk",
+            "excited_wiggle": "Excited Wiggle",
+            "contemplate": "Contemplate",
+            "lift_weights": "Lift Weights",
+            "type_frantic": "Type Frantically",
+            "little_dance": "Little Dance",
+            "stargaze": "Stargaze",
+            "deep_focus": "Deep Focus",
+            "pushups": "Push-ups",
+            "head_bob": "Head Bob to Music",
+            "chase_tail": "Chase Own Tail",
+            "hiccup": "Hiccup",
+            "sneeze_fly": "Sneeze Fly",
+            "spooked_reflection": "Spooked by Reflection",
+            "trip": "Trip Over Nothing",
+            "statue": "Pretend Statue",
+            "burp": "Burp",
+            "jump_scare": "Jump Scare",
+            "try_whistle": "Try to Whistle",
+            "santa_gift": "Deliver Gift",
+            "new_year_fireworks": "New Year Fireworks",
+            "valentine_hearts": "Valentine Hearts",
+            "halloween_spook": "Halloween Spook",
+            "spring_stretch": "Spring Stretch",
+            "summer_vibes": "Summer Vibes",
+            "cooking": "Cooking",
+            "painting": "Painting",
+            "karate_chop": "Karate Chop",
+            "ghost_pretend": "Ghost Pretend",
+            "writing_letter": "Write a Letter",
+            "yoga": "Yoga",
+            "bird_watching": "Bird Watching",
+            "air_guitar": "Air Guitar",
+            "pillow_fort": "Pillow Fort",
+            "shadow_puppets": "Shadow Puppets",
+        }
+
+        _CATEGORY_LABELS = {
+            "hobbies": "Hobbies",
+            "daily_life": "Daily Life",
+            "activity": "Activities",
+            "silly": "Silly",
+            "emotional": "Emotional",
+            "weather": "Weather",
+            "seasonal": "Seasonal",
+        }
+
+        # Group animations by category
+        by_cat: dict[str, list[tuple[str, str]]] = {}
+        for name, seq in ANIMATION_LIBRARY.items():
+            cat = seq.category
+            display = _DISPLAY_NAMES.get(name, name.replace("_", " ").title())
+            by_cat.setdefault(cat, []).append((name, display))
+
+        # Show hobbies first, then the rest
+        cat_order = ["hobbies", "daily_life", "activity", "silly",
+                      "emotional", "weather", "seasonal"]
+        for cat in cat_order:
+            items = by_cat.get(cat)
+            if not items:
+                continue
+            label = _CATEGORY_LABELS.get(cat, cat.title())
+            submenu = menu.addMenu(label)
+            submenu.setStyleSheet(menu.styleSheet())
+            for anim_name, display in sorted(items, key=lambda x: x[1]):
+                action = submenu.addAction(display)
+                action.triggered.connect(
+                    lambda checked, n=anim_name: self._play_animation_sequence(n))
+
         menu.exec(self.mapToGlobal(QPoint(self.width(), 0)))
         self._last_interaction_time = time.monotonic()
 

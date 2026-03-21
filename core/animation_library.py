@@ -37,6 +37,12 @@ class AnimProp(Enum):
     GIFT_BOX = auto()
     TELESCOPE = auto()
     MIRROR = auto()
+    FRYING_PAN = auto()
+    PAINTBRUSH = auto()
+    LETTER = auto()
+    BINOCULARS = auto()
+    GUITAR = auto()
+    PILLOW = auto()
 
 
 @dataclass
@@ -630,6 +636,159 @@ def _build_library() -> dict[str, AnimSequence]:
         AnimStep(delay=0.5, reaction="STRETCH"),
         AnimStep(delay=0.4, face="content"),
     ], cooldown=3600)
+
+    # ===================================================================
+    # HOBBIES — commandable activities the fish can do on request
+    # ===================================================================
+
+    # --- Cooking ---
+    lib["cooking"] = AnimSequence("cooking", "hobbies", [
+        AnimStep(delay=0.0, face="focused", prop=AnimProp.FRYING_PAN),
+        AnimStep(delay=0.4, offset_x=1.0),
+        AnimStep(delay=0.2, offset_x=-1.0),
+        AnimStep(delay=0.2, offset_x=1.0),     # stirring
+        AnimStep(delay=0.2, offset_x=-1.0),
+        AnimStep(delay=0.3, particle="emote_coffee"),  # steam rising
+        AnimStep(delay=0.5, face="curious", reaction="HEAD_TILT"),
+        AnimStep(delay=0.4, particle="emote_coffee"),
+        AnimStep(delay=0.5, face="happy", reaction="NOD", particle="sparkle"),
+        AnimStep(delay=0.4, hide_prop=True, blink="slow"),
+        AnimStep(delay=0.3, face="content"),
+    ], cooldown=300)
+
+    # --- Painting ---
+    lib["painting"] = AnimSequence("painting", "hobbies", [
+        AnimStep(delay=0.0, face="focused", prop=AnimProp.PAINTBRUSH),
+        AnimStep(delay=0.5, look_dir=(-0.4, 0.2)),
+        AnimStep(delay=0.3, offset_x=1.0),
+        AnimStep(delay=0.3, offset_x=-1.5),
+        AnimStep(delay=0.3, offset_x=0.5),     # brush strokes
+        AnimStep(delay=0.3, offset_x=-1.0),
+        AnimStep(delay=0.4, face="curious", reaction="HEAD_TILT"),
+        AnimStep(delay=0.5, offset_x=0.5),
+        AnimStep(delay=0.3, offset_x=-0.5),
+        AnimStep(delay=0.4, offset_x=0.0, face="happy", particle="sparkle"),
+        AnimStep(delay=0.3, hide_prop=True, look_dir=(0.0, 0.0)),
+        AnimStep(delay=0.4, face="content", blink="slow"),
+    ], cooldown=300)
+
+    # --- Karate chop ---
+    lib["karate_chop"] = AnimSequence("karate_chop", "hobbies", [
+        AnimStep(delay=0.0, face="focused"),
+        AnimStep(delay=0.4, reaction="STRETCH", offset_y=-1.0),
+        AnimStep(delay=0.3, blink="slow"),
+        AnimStep(delay=0.5, face="excited", offset_y=0.0),
+        AnimStep(delay=0.15, offset_x=3.0, reaction="FLINCH"),   # strike!
+        AnimStep(delay=0.1, particle="dust", particle_count=3),
+        AnimStep(delay=0.3, offset_x=0.0, particle="star"),
+        AnimStep(delay=0.4, face="happy", reaction="BOUNCE"),
+        AnimStep(delay=0.3, blink="double"),
+    ], cooldown=300)
+
+    # --- Ghost pretend ---
+    lib["ghost_pretend"] = AnimSequence("ghost_pretend", "hobbies", [
+        AnimStep(delay=0.0, face="excited", prop=AnimProp.BLANKET),
+        AnimStep(delay=0.4, offset_y=-1.0),
+        AnimStep(delay=0.3, offset_x=2.0),
+        AnimStep(delay=0.3, offset_x=-2.0),     # floating around
+        AnimStep(delay=0.3, offset_x=1.0, offset_y=-2.0),
+        AnimStep(delay=0.3, offset_x=-1.0, offset_y=-1.0),
+        AnimStep(delay=0.4, reaction="WIGGLE"),
+        AnimStep(delay=0.5, face="happy", offset_x=0.0, offset_y=0.0),
+        AnimStep(delay=0.3, hide_prop=True, reaction="BOUNCE"),
+        AnimStep(delay=0.3, particle="sparkle", blink="double"),
+    ], cooldown=300)
+
+    # --- Writing a letter ---
+    lib["writing_letter"] = AnimSequence("writing_letter", "hobbies", [
+        AnimStep(delay=0.0, face="focused", prop=AnimProp.LETTER),
+        AnimStep(delay=0.5, look_dir=(-0.3, 0.4)),
+        AnimStep(delay=0.3, offset_x=0.3),
+        AnimStep(delay=0.2, offset_x=-0.3),     # writing motions
+        AnimStep(delay=0.2, offset_x=0.3),
+        AnimStep(delay=0.2, offset_x=-0.3),
+        AnimStep(delay=0.4, blink="slow"),
+        AnimStep(delay=0.5, face="curious", reaction="HEAD_TILT"),
+        AnimStep(delay=0.4, offset_x=0.3),
+        AnimStep(delay=0.2, offset_x=0.0),
+        AnimStep(delay=0.4, face="content", particle="heart"),
+        AnimStep(delay=0.3, hide_prop=True, look_dir=(0.0, 0.0)),
+        AnimStep(delay=0.3, blink="slow"),
+    ], cooldown=300)
+
+    # --- Yoga ---
+    lib["yoga"] = AnimSequence("yoga", "hobbies", [
+        AnimStep(delay=0.0, face="content"),
+        AnimStep(delay=0.5, reaction="STRETCH", offset_y=-1.0),
+        AnimStep(delay=0.8, blink="slow"),
+        AnimStep(delay=0.6, offset_y=0.0, reaction="STRETCH"),
+        AnimStep(delay=0.5, offset_x=1.0),
+        AnimStep(delay=0.6, offset_x=-1.0, blink="slow"),
+        AnimStep(delay=0.5, offset_x=0.0, offset_y=-1.5),
+        AnimStep(delay=0.8, blink="slow", particle="sparkle"),
+        AnimStep(delay=0.5, offset_y=0.0, face="happy"),
+        AnimStep(delay=0.3, reaction="NOD", blink="double"),
+    ], cooldown=300)
+
+    # --- Bird watching ---
+    lib["bird_watching"] = AnimSequence("bird_watching", "hobbies", [
+        AnimStep(delay=0.0, face="curious", prop=AnimProp.BINOCULARS),
+        AnimStep(delay=0.5, look_dir=(-0.6, -0.5)),
+        AnimStep(delay=0.8, blink="slow"),
+        AnimStep(delay=0.5, look_dir=(0.4, -0.7)),
+        AnimStep(delay=0.6, face="excited", reaction="FLINCH"),  # spotted one!
+        AnimStep(delay=0.3, look_dir=(0.6, -0.8)),
+        AnimStep(delay=0.5, particle="star"),
+        AnimStep(delay=0.4, face="happy", reaction="NOD"),
+        AnimStep(delay=0.5, look_dir=(0.0, 0.0), hide_prop=True),
+        AnimStep(delay=0.3, blink="slow"),
+    ], cooldown=300)
+
+    # --- Air guitar ---
+    lib["air_guitar"] = AnimSequence("air_guitar", "hobbies", [
+        AnimStep(delay=0.0, face="excited", prop=AnimProp.GUITAR),
+        AnimStep(delay=0.3, reaction="BOUNCE", particle="music"),
+        AnimStep(delay=0.25, offset_x=1.0),
+        AnimStep(delay=0.25, offset_x=-1.0, particle="music"),
+        AnimStep(delay=0.25, offset_x=1.5),
+        AnimStep(delay=0.25, offset_x=-1.5, particle="music"),
+        AnimStep(delay=0.3, reaction="WIGGLE", particle="music"),
+        AnimStep(delay=0.3, reaction="BOUNCE"),
+        AnimStep(delay=0.25, offset_x=2.0, particle="music"),
+        AnimStep(delay=0.25, offset_x=-2.0),
+        AnimStep(delay=0.3, offset_x=0.0, reaction="WIGGLE", particle="sparkle"),
+        AnimStep(delay=0.4, face="happy", hide_prop=True),
+        AnimStep(delay=0.3, blink="double"),
+    ], cooldown=300)
+
+    # --- Pillow fort ---
+    lib["pillow_fort"] = AnimSequence("pillow_fort", "hobbies", [
+        AnimStep(delay=0.0, face="excited", prop=AnimProp.PILLOW),
+        AnimStep(delay=0.4, offset_y=1.0),
+        AnimStep(delay=0.3, offset_x=1.0),
+        AnimStep(delay=0.3, offset_x=-1.0),     # arranging pillows
+        AnimStep(delay=0.3, offset_x=0.0, offset_y=0.5),
+        AnimStep(delay=0.4, reaction="WIGGLE"),
+        AnimStep(delay=0.5, face="content", blink="slow"),
+        AnimStep(delay=0.6, face="happy", particle="sparkle"),
+        AnimStep(delay=0.5, offset_y=0.0, hide_prop=True),
+        AnimStep(delay=0.3, reaction="NOD", blink="slow"),
+    ], cooldown=300)
+
+    # --- Shadow puppets ---
+    lib["shadow_puppets"] = AnimSequence("shadow_puppets", "hobbies", [
+        AnimStep(delay=0.0, face="excited"),
+        AnimStep(delay=0.3, look_dir=(0.8, 0.0)),
+        AnimStep(delay=0.4, offset_x=1.5),
+        AnimStep(delay=0.3, offset_x=-1.5),     # hand shapes
+        AnimStep(delay=0.3, offset_x=1.0, offset_y=-1.0),
+        AnimStep(delay=0.3, offset_x=-1.0, offset_y=0.0),
+        AnimStep(delay=0.4, face="happy", reaction="WIGGLE"),
+        AnimStep(delay=0.3, offset_x=2.0, offset_y=-1.5),
+        AnimStep(delay=0.3, offset_x=-2.0, offset_y=0.0),
+        AnimStep(delay=0.4, face="content", look_dir=(0.0, 0.0)),
+        AnimStep(delay=0.3, offset_x=0.0, blink="double", particle="sparkle"),
+    ], cooldown=300)
 
     return lib
 

@@ -90,6 +90,10 @@ PATTERNS = [
     (r"(?:play\s+a\s+game|let'?s\s+play)",
      lambda m: CommandResult("game_picker", "", "What should we play?")),
 
+    # "hobbies" / "show hobbies" / "do a hobby" / "do something fun"
+    (r"(?:show\s+)?hobbies|do\s+(?:a\s+)?hobb(?:y|ies)|do\s+something\s+fun",
+     lambda m: CommandResult("hobby_picker", "", "Let me show you what I can do!")),
+
     # "volume up/down"
     (r"(?:turn\s+)?volume\s+(up|down)",
      lambda m: _volume(m.group(1))),

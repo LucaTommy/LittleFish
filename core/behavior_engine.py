@@ -502,6 +502,38 @@ class BehaviorEngine(QObject):
                        "try_whistle", cooldown=900,
                        condition=lambda e, h, d, idle, app: e in ("bored", "happy", "content")))
 
+        # Hobby animations — spontaneous when bored or idle
+        pool.append(B("anim_cooking", "animation", "play_anim",
+                       "cooking", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("content", "bored") and idle > 120))
+        pool.append(B("anim_painting", "animation", "play_anim",
+                       "painting", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("content", "curious") and idle > 120))
+        pool.append(B("anim_karate", "animation", "play_anim",
+                       "karate_chop", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("excited", "bored", "frustrated")))
+        pool.append(B("anim_ghost", "animation", "play_anim",
+                       "ghost_pretend", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("excited", "happy") and idle > 180))
+        pool.append(B("anim_letter", "animation", "play_anim",
+                       "writing_letter", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("content", "happy") and idle > 200))
+        pool.append(B("anim_yoga", "animation", "play_anim",
+                       "yoga", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("content", "sleepy") and idle > 180))
+        pool.append(B("anim_bird_watch", "animation", "play_anim",
+                       "bird_watching", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("curious", "content") and idle > 200))
+        pool.append(B("anim_air_guitar", "animation", "play_anim",
+                       "air_guitar", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("happy", "excited") or "spotify" in app))
+        pool.append(B("anim_pillow_fort", "animation", "play_anim",
+                       "pillow_fort", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("bored", "sleepy") and idle > 240))
+        pool.append(B("anim_shadow_puppets", "animation", "play_anim",
+                       "shadow_puppets", cooldown=900,
+                       condition=lambda e, h, d, idle, app: e in ("bored", "happy") and idle > 200))
+
         # Seasonal animations
         pool.append(B("anim_santa_gift", "animation", "play_anim",
                        "santa_gift", cooldown=3600, priority=3,

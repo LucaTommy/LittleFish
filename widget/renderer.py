@@ -1010,6 +1010,70 @@ class FishRenderer:
             p.fillRect(x + 1, y + 1, 2, 3, glass)
             p.fillRect(x + 1, y + 5, 1, 3, frame_c)      # handle
 
+        elif prop == AnimProp.FRYING_PAN:
+            # Frying pan held to the right
+            pan = QColor(80, 80, 90)
+            inner = QColor(60, 60, 65)
+            handle = QColor(120, 90, 50)
+            x, y = B + PIXEL_BODY, B + 12
+            p.fillRect(x, y, 5, 4, pan)                   # pan body
+            p.fillRect(x + 1, y + 1, 3, 2, inner)         # inside
+            p.fillRect(x + 5, y + 1, 3, 1, handle)        # handle
+
+        elif prop == AnimProp.PAINTBRUSH:
+            # Paintbrush held to the right, tip colored
+            wood = QColor(180, 140, 80)
+            ferrule = QColor(160, 160, 170)
+            paint = QColor(60, 130, 220)
+            x, y = B + PIXEL_BODY, B + 10
+            p.fillRect(x, y, 4, 1, wood)                  # handle
+            p.fillRect(x + 4, y, 1, 1, ferrule)           # ferrule
+            p.fillRect(x + 5, y - 1, 2, 3, paint)         # paint tip
+
+        elif prop == AnimProp.LETTER:
+            # Envelope / letter held below
+            paper = QColor(240, 235, 215)
+            edge = QColor(200, 190, 160)
+            seal = QColor(200, 60, 60)
+            x, y = B + 2, B + PIXEL_BODY
+            p.fillRect(x, y, 8, 5, paper)
+            p.fillRect(x, y, 8, 1, edge)                  # top edge
+            p.fillRect(x, y + 4, 8, 1, edge)              # bottom edge
+            p.fillRect(x + 3, y + 2, 2, 1, seal)          # wax seal
+
+        elif prop == AnimProp.BINOCULARS:
+            # Binoculars held up to eyes
+            body = QColor(50, 50, 60)
+            lens_c = QColor(160, 190, 230)
+            x, y = B + PIXEL_BODY, B + 6
+            p.fillRect(x, y, 3, 2, body)                  # left tube
+            p.fillRect(x, y + 3, 3, 2, body)              # right tube
+            p.fillRect(x, y + 2, 3, 1, body)              # bridge
+            p.fillRect(x + 3, y, 1, 2, lens_c)            # left lens
+            p.fillRect(x + 3, y + 3, 1, 2, lens_c)        # right lens
+
+        elif prop == AnimProp.GUITAR:
+            # Small guitar / ukulele
+            body = QColor(180, 120, 60)
+            neck = QColor(160, 110, 50)
+            strings = QColor(220, 210, 180)
+            sound = QColor(60, 40, 20)
+            x, y = B - 4, B + 8
+            p.fillRect(x, y, 4, 5, body)                  # body
+            p.fillRect(x + 1, y + 2, 2, 1, sound)         # sound hole
+            p.fillRect(x + 1, y - 3, 1, 3, neck)          # neck
+            p.fillRect(x + 1, y - 1, 1, 4, strings)       # string
+
+        elif prop == AnimProp.PILLOW:
+            # Fluffy pillow
+            pillow = QColor(200, 180, 230, 200)
+            edge = QColor(170, 150, 200, 220)
+            x, y = B + 2, B + PIXEL_BODY - 2
+            p.fillRect(x, y, 10, 6, pillow)
+            p.fillRect(x, y, 10, 1, edge)                 # top edge
+            p.fillRect(x, y + 5, 10, 1, edge)             # bottom edge
+            p.fillRect(x + 3, y + 2, 4, 1, QColor(220, 200, 245, 150))  # highlight
+
     def _draw_particles(self, p: QPainter, particles: list):
         """Draw particle effects around the fish."""
         for ptcl in particles:
