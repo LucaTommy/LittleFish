@@ -6,6 +6,7 @@ Dark-themed PyQt6 panel matching the fish aesthetic.
 import sys
 import os
 import json
+from config import load_secrets, save_secrets
 import winreg
 from pathlib import Path
 
@@ -180,6 +181,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_permissions_tab(), "Permissions")
         tabs.addTab(self._build_personality_tab(), "Personality")
         tabs.addTab(self._build_intelligence_tab(), "Intelligence")
+        tabs.addTab(self._build_apikeys_tab(), "API Keys")
         tabs.addTab(self._build_system_tab(), "System")
         layout.addWidget(tabs)
 
@@ -496,6 +498,99 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
         return tab
+
+    # ------------------------------------------------------------------
+    # Tab: API Keys  (stored locally, never in the repo)
+    # ------------------------------------------------------------------
+
+    def _build_apikeys_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel(
+            "API keys are stored locally on your computer\n"
+            "(%APPDATA%/LittleFish/secrets.json).\n"
+            "They are NEVER uploaded to GitHub."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #95a5a6; font-size: 11px; margin-bottom: 6px;")
+        layout.addWidget(info)
+
+        # Groq keys
+        groq_group = QGroupBox("Groq API Keys")
+        groq_layout = QVBoxLayout()
+        groq_layout.setSpacing(6)
+
+        secrets = load_secrets()
+        existing_keys = secrets.get("groq_keys", [])
+
+        self._groq_key_edits: list[QLineEdit] = []
+        for i in range(4):
+            row = QHBoxLayout()
+            label = QLabel(f"Key {i + 1}:")
+            label.setFixedWidth(45)
+            edit = QLineEdit()
+            edit.setPlaceholderText("gsk_...")
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            if i < len(existing_keys) and existing_keys[i]:
+                edit.setText(existing_keys[i])
+            self._groq_key_edits.append(edit)
+            show_btn = QPushButton("Show")
+            show_btn.setFixedWidth(50)
+            show_btn.setCheckable(True)
+            show_btn.toggled.connect(lambda checked, e=edit, b=show_btn: (
+                e.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password),
+                b.setText("Hide" if checked else "Show"),
+            ))
+            row.addWidget(label)
+            row.addWidget(edit)
+            row.addWidget(show_btn)
+            groq_layout.addLayout(row)
+
+        groq_group.setLayout(groq_layout)
+        layout.addWidget(groq_group)
+
+        # GitHub token
+        gh_group = QGroupBox("GitHub Token (optional — for private repo updates)")
+        gh_layout = QVBoxLayout()
+        self._gh_token_edit = QLineEdit()
+        self._gh_token_edit.setPlaceholderText("ghp_... or github_pat_...")
+        self._gh_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        gh_token = secrets.get("github_token", "")
+        if gh_token:
+            self._gh_token_edit.setText(gh_token)
+        gh_layout.addWidget(self._gh_token_edit)
+        gh_group.setLayout(gh_layout)
+        layout.addWidget(gh_group)
+
+        # Save button
+        save_btn = QPushButton("Save API Keys")
+        save_btn.setStyleSheet(
+            "QPushButton { background-color: #27ae60; color: white; "
+            "font-weight: bold; padding: 8px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #2ecc71; }"
+        )
+        save_btn.clicked.connect(self._on_save_apikeys)
+        layout.addWidget(save_btn)
+
+        self._apikeys_status = QLabel("")
+        self._apikeys_status.setStyleSheet("color: #2ecc71; font-size: 11px;")
+        layout.addWidget(self._apikeys_status)
+
+        layout.addStretch()
+        return tab
+
+    def _on_save_apikeys(self):
+        secrets = load_secrets()
+        keys = [e.text().strip() for e in self._groq_key_edits if e.text().strip()]
+        secrets["groq_keys"] = keys
+        token = self._gh_token_edit.text().strip()
+        if token:
+            secrets["github_token"] = token
+        else:
+            secrets.pop("github_token", None)
+        save_secrets(secrets)
+        self._apikeys_status.setText(f"Saved! {len(keys)} Groq key(s) stored locally.")
 
     # ------------------------------------------------------------------
     # Tab: System

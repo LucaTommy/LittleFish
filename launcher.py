@@ -58,6 +58,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.shared_state import SharedState, STATE_PATH, LOG_PATH
 from config import CONFIG_PATH as _SETTINGS_PATH
+from config import get_github_token
 
 
 # ---------------------------------------------------------------------------
@@ -412,14 +413,9 @@ class UpdateChecker:
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "LittleFishLauncher",
         }
-        # Support private repos via a personal access token stored in settings
-        try:
-            cfg = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
-            token = cfg.get("github_token", "").strip()
-            if token:
-                headers["Authorization"] = f"token {token}"
-        except (OSError, json.JSONDecodeError):
-            pass
+        token = get_github_token()
+        if token:
+            headers["Authorization"] = f"token {token}"
         return headers
 
     def check(self):
@@ -1687,15 +1683,9 @@ class DashboardWindow(QWidget):
                 "morning_briefing": False, "jokes": False,
                 "autonomous_behavior": True,
             },
-            "groq_keys": [],
         }
         settings_path = _SETTINGS_PATH
         try:
-            # Preserve groq_keys from existing settings
-            if settings_path.exists():
-                existing = json.loads(settings_path.read_text(encoding="utf-8"))
-                if existing.get("groq_keys"):
-                    default_settings["groq_keys"] = existing["groq_keys"]
             settings_path.write_text(json.dumps(default_settings, indent=2), encoding="utf-8")
         except OSError:
             pass

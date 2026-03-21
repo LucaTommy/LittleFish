@@ -8,3 +8,4 @@ _backup/
 _update_staging/
 _apply_update.cmd
 _rollback.cmd
+secrets.json

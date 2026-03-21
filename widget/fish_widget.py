@@ -46,7 +46,7 @@ FRAME_INTERVAL_MS = 16             # ~60fps
 EDGE_RESISTANCE_MARGIN = 40
 EDGE_RESISTANCE_STRENGTH = 0.55
 
-from config import CONFIG_PATH
+from config import CONFIG_PATH, get_groq_keys
 
 UNPROMPTED_PHRASES = [
     "I wonder what's for lunch...",
@@ -111,7 +111,7 @@ class FishWidget(QWidget):
             self._monitor.start()
 
         # --- Voice / Commands / TTS ---
-        groq_keys = self._config.get("groq_keys", [])
+        groq_keys = get_groq_keys()
         self._voice = VoiceRecorder(self._config, fish_name=self._user_profile.fish_name)
         self._voice.transcription_ready.connect(self._on_transcription)
         self._voice.listening_started.connect(self._on_listening_started)
@@ -358,14 +358,10 @@ class FishWidget(QWidget):
                     pass
 
             # Deep merge: app-managed keys win, but preserve disk values
-            # the app never touches (like groq_keys added by user)
+            # the app never touches
             merged = dict(existing)
             for k, v in self._config.items():
-                if k == "groq_keys":
-                    # Prefer disk if in-memory is empty but disk has values
-                    if not v and existing.get("groq_keys"):
-                        continue
-                elif isinstance(v, dict) and isinstance(existing.get(k), dict):
+                if isinstance(v, dict) and isinstance(existing.get(k), dict):
                     merged[k] = dict(existing[k])
                     merged[k].update(v)
                     continue
@@ -1997,7 +1993,7 @@ class FishWidget(QWidget):
         self._relationship.add_points("conversation")
 
         # 30% pool phrase (simple emotes), 70% AI-generated (conversational)
-        if (random.random() < 0.3 or not self._config.get("groq_keys")):
+        if (random.random() < 0.3 or not get_groq_keys()):
             phrase = random.choice(UNPROMPTED_PHRASES)
             self._say(phrase)
             self._tts.say(phrase)

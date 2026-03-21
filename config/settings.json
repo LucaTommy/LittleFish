@@ -42,12 +42,7 @@
     "tts_voice": "default",
     "whisper_mode": "groq"
   },
-  "groq_keys": [
-    "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",
-    "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",
-    "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",
-    "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"
-  ],
+  "groq_keys": [],
   "theme": "default",
   "quick_launches": {
     "setup": [
