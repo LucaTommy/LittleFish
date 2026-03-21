@@ -1,43 +1,14 @@
-name: Build & Release
+# Releases are now created locally via:  python build.py publish
+# This workflow is kept as a no-op to avoid confusion if tags are pushed.
+# The publish command builds locally and uploads to GitHub Releases directly.
+
+name: Build & Release (disabled)
 
 on:
-  push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: write
+  workflow_dispatch:  # manual only, not triggered by tags
 
 jobs:
-  build:
-    runs-on: windows-latest
+  info:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build executables and release zip
-        run: python build.py release
-
-      - name: Get version from tag
-        id: version
-        shell: bash
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Little Fish ${{ steps.version.outputs.tag }}
-          generate_release_notes: true
-          files: |
-            dist/LittleFish-*.zip
+      - run: echo "Releases are built locally. Use 'python build.py publish'."
