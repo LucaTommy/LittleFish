@@ -1360,6 +1360,13 @@ class FishWidget(QWidget):
             self._open_hobbies()
             result.response = "Pick a hobby!"
 
+        elif result.action == "play_hobby":
+            import random as _rng
+            hobby = result.target if result.target and result.target != "random" else \
+                _rng.choice(["painting", "gaming", "gardening", "journaling", "piano"])
+            self._play_animation_sequence(hobby)
+            result.response = f"Okay, I'll go {hobby} for a bit!"
+
         elif result.action == "screen_review":
             focus = result.target if result.target else None
             self._start_screen_review(focus)
@@ -2258,7 +2265,7 @@ class FishWidget(QWidget):
                 self._last_listening_msg = now
                 self._say("I'm listening...")
 
-    def _on_listening_stopped(self):
+    def _on_listening_stopped(self):        
         # Only dismiss bubble if not in active conversation
         if self._voice.conversation_state == ConversationState.PASSIVE:
             self._bubble.dismiss()

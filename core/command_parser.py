@@ -1,9 +1,11 @@
 """
 Command parser for Little Fish.
-Regex pattern matching FIRST, Groq LLM fallback ONLY when patterns miss.
-Returns a CommandResult that the widget can act on.
+Two-stage system: fast regex for unambiguous commands, Groq AI intent
+classification for everything else.  Returns a CommandResult that the
+widget can act on.
 """
 
+import json
 import re
 import webbrowser
 import subprocess
@@ -29,618 +31,222 @@ class CommandResult:
 
 
 # ---------------------------------------------------------------------------
-# Pattern definitions
+# Stage 1: Fast regex patterns (unambiguous, time-sensitive commands only)
 # ---------------------------------------------------------------------------
 
-PATTERNS = [
-    # --- YouTube search (EN + IT, must be before generic "open youtube") ---
-    (r"(?:open|boot\s+up|launch|start)\s+youtube\s+(?:and\s+)?(?:play|put\s+on|search|find)\s+(.+)",
-     lambda m: _youtube_search(m.group(1).strip())),
-    (r"(?:play|put\s+on|search)\s+(.+?)\s+on\s+youtube",
-     lambda m: _youtube_search(m.group(1).strip())),
-    (r"(?:apri|avvia)\s+youtube\s+(?:e\s+)?(?:metti|cerca|trova|play)\s+(.+)",
-     lambda m: _youtube_search(m.group(1).strip())),
-    (r"metti\s+(.+?)\s+su\s+youtube",
-     lambda m: _youtube_search(m.group(1).strip())),
-    # Fallback: "open youtube lofi" / "search youtube lofi"
-    (r"(?:open|play|search)\s+youtube\s+(.+)",
-     lambda m: _youtube_search(m.group(1))),
-
-    # --- Spotify search (EN + IT, must be before generic "open spotify") ---
-    (r"(?:open|launch|start)\s+spotify\s+(?:and\s+)?(?:play|put\s+on|search)\s+(.+)",
-     lambda m: _spotify_search(m.group(1).strip())),
-    (r"(?:play|put\s+on)\s+(.+?)\s+on\s+spotify",
-     lambda m: _spotify_search(m.group(1).strip())),
-    (r"(?:apri|avvia)\s+spotify\s+(?:e\s+)?(?:metti|cerca|play)\s+(.+)",
-     lambda m: _spotify_search(m.group(1).strip())),
-    (r"metti\s+(.+?)\s+su\s+spotify",
-     lambda m: _spotify_search(m.group(1).strip())),
-
-    # "go to [url]"
-    (r"(?:go\s+to|open|navigate\s+to)\s+(https?://\S+)",
-     lambda m: _open_url(m.group(1))),
-
-    # "open [website]" — common sites / IT: "apri google" / "vai su reddit"
-    (r"(?:open|apri|vai\s+su|go\s+to)\s+(google|reddit|github|youtube|twitter|instagram|wikipedia|stackoverflow|twitch|spotify|netflix|discord)(?:\s*\.com)?\b",
-     lambda m: _open_website(m.group(1).strip())),
-
-    # "switch to [app]" / IT: "passa a chrome"
-    (r"(?:switch\s+to|go\s+to|passa\s+a)\s+(vscode|visual\s+studio|chrome|firefox|spotify|discord|telegram|whatsapp)\b",
-     lambda m: _switch_to_app(m.group(1).strip())),
-
-    # "open [file] from [folder]" / "open attention from downloads"
-    (r"open\s+(?:the\s+)?(.+?)\s+(?:from|in)\s+(downloads?|desktop|documents?|pictures?|music|videos?)",
-     lambda m: _open_file_from_folder(m.group(1).strip(), m.group(2).strip())),
-
-    # --- Window management (must be before generic "open/close [app]") ---
-    # "snap left / right"
-    (r"(?:snap|put)\s+(?:(?:the\s+)?window\s+)?(?:to\s+(?:the\s+)?)?(left|right)",
-     lambda m: _snap_window(m.group(1))),
-
-    # "maximize window"
-    (r"(?:maximize|maximise|full\s*screen)\s*(?:(?:the\s+)?window)?",
-     lambda m: _snap_window("up")),
-
-    # "minimize window" / "minimize this window"  (NOT bare "minimize" – that hides the fish)
-    (r"minimize\s+(?:the\s+)?(?:this\s+|current\s+)?window",
-     lambda m: _snap_window("down")),
-
-    # "close window" / "close this window" / "close current window"
-    (r"close\s+(?:the\s+)?(?:this\s+|current\s+)?window$",
-     lambda m: _close_current_window()),
-
-    # "always on top" / "pin window" / "unpin window"
-    (r"\b(?:pin|unpin|toggle\s+pin|always\s+on\s+top)\b(?:\s+(?:the\s+)?(?:this\s+|current\s+)?window)?",
-     lambda m: _pin_window_on_top()),
-
-    # "open my setup" / "work mode" / "launch my setup"
-    (r"(?:(?:open|launch|start)\s+(?:my\s+)?(?:setup|work\s*(?:mode|station)?)|work\s*mode)",
-     lambda m: _run_quick_launch("setup")),
-
-    # "open [app]"
-    (r"open\s+(?:the\s+)?(.+)",
-     lambda m: _open_app(m.group(1).strip())),
-
-    # "close [app]"
-    (r"close\s+(?:the\s+)?(.+)",
-     lambda m: _close_app(m.group(1).strip())),
-
-    # "play [specific game]" / "let's play snake" — must name a game
-    (r"\bplay\s+(?:a\s+)?(?:game\s+of\s+)?(?:the\s+)?(snake|pong|flappy|breakout|minesweeper|memory|trivia|whack|reaction|typing|catch)\b",
-     lambda m: CommandResult("play_game", m.group(1).strip(),
-                              f"Let's play {m.group(1).strip()}!")),
-
-    (r"(?:play\s+a\s+game|let'?s\s+play(?:\s+a\s+game)?|giochiamo)",
-     lambda m: CommandResult("game_picker", "", "What should we play?")),
-
-    # "hobbies" / "show hobbies" / "do a hobby" / "do something fun"
-    (r"(?:show\s+)?hobbies|do\s+(?:a\s+)?hobb(?:y|ies)|do\s+something\s+fun",
-     lambda m: CommandResult("hobby_picker", "", "Let me show you what I can do!")),
-
-    # "volume up/down" / IT: "alza/abbassa il volume"
-    (r"(?:turn\s+)?volume\s+(up|down)",
-     lambda m: _volume(m.group(1))),
-    (r"alza\s+(?:il\s+)?volume",
-     lambda m: _volume("up")),
-    (r"abbassa\s+(?:il\s+)?volume",
-     lambda m: _volume("down")),
-
-    # "take a break" / "pause" / "rest"
-    (r"(?:take\s+a\s+break|\bpause\b|\brest\b|\bchill\b)",
-     lambda m: CommandResult("rest_mode", "", "I'll be quiet for a bit. Poke me when you need me.")),
-
-    # "come here"
-    (r"come\s+here",
-     lambda m: CommandResult("come_to_cursor", "", "Coming!")),
-
-    # "go away" / "hide"
-    (r"(?:go\s+away|\bhide\b|\bdisappear\b|\bminimize\b)",
-     lambda m: CommandResult("hide", "", "I'll be in the tray if you need me.")),
-
-    # Greetings
-    (r"good\s+morning",
-     lambda m: CommandResult("greeting", "morning", "Good morning! Ready for today?")),
-
-    (r"good\s+night",
-     lambda m: CommandResult("greeting", "night", "Good night! Sleep well.")),
-
-    (r"(?:hello|hey|hi)\b",
-     lambda m: CommandResult("greeting", "hello", "Hey there!")),
-
-    # "what time is it" / IT: "che ore sono" / "che ora è"
-    (r"what(?:'s|\s+is)\s+the\s+time|che\s+ore\s+sono|che\s+ora\s+[eè]",
-     lambda m: _get_time()),
-
-    # "what date is it" / "what day is it" / IT: "che giorno è"
-    (r"what(?:'s|\s+is)\s+the\s+date|what\s+day\s+is\s+it|che\s+giorno\s+[eè]",
-     lambda m: _get_date()),
-
-    # "how are you"
-    (r"how\s+are\s+you",
-     lambda m: CommandResult("status", "", "")),  # fish_widget fills response from emotion
-
-    # "take a screenshot" / "screenshot"
-    (r"(?:take\s+a\s+)?screenshot",
-     lambda m: _take_screenshot()),
-
-    # "search for..." / "google..."
-    (r"(?:search\s+(?:for\s+)?|google\s+)(.+)",
-     lambda m: _google_search(m.group(1).strip())),
-
-    # "open file explorer" / "open explorer" / "open files" / IT: "apri file" / "apri cartella"
-    (r"(?:open|apri)\s+(?:file\s+)?(?:explorer|files|cartella|file)\b",
-     lambda m: _open_file_explorer()),
-
-    # "open downloads" / "open desktop" / etc / IT: "apri download"
-    (r"(?:open|apri)\s+(downloads?|desktop|documents?|documenti|scrivania)\b",
-     lambda m: _open_folder(m.group(1).strip())),
-
-    # "set a timer for X minutes/seconds"
+_FAST_PATTERNS = [
+    # Timer with explicit numbers
     (r"(?:set\s+(?:a\s+)?timer\s+(?:for\s+)?)(\d+)\s*(min(?:ute)?s?|sec(?:ond)?s?|hour(?:s)?)",
      lambda m: _set_timer(int(m.group(1)), m.group(2))),
 
-    # "set [name] timer for X minutes" / "start pasta timer 10 minutes"
     (r"(?:set|start)\s+(?:a\s+)?(.+?)\s+timer\s+(?:for\s+)?(\d+)\s*(min(?:ute)?s?|sec(?:ond)?s?|hour(?:s)?)",
      lambda m: _set_named_timer(m.group(1).strip(), int(m.group(2)), m.group(3))),
 
-    # "remind me in X minutes to..."
     (r"remind\s+me\s+in\s+(\d+)\s*(min(?:ute)?s?|sec(?:ond)?s?|hour(?:s)?)\s+(?:to\s+)?(.+)",
      lambda m: _set_reminder(int(m.group(1)), m.group(2), m.group(3).strip())),
 
-    # "remind me to [task] in X minutes"
     (r"remind\s+me\s+to\s+(.+?)\s+in\s+(\d+)\s*(min(?:ute)?s?|sec(?:ond)?s?|hour(?:s)?)",
      lambda m: _set_reminder(int(m.group(2)), m.group(3), m.group(1).strip())),
 
-    # "alarm at [time]" / "wake me up at [time]" / "set alarm for 7:30"
     (r"(?:set\s+(?:an?\s+)?)?(?:alarm|wake\s+(?:me\s+)?up)\s+(?:at|for)\s+(.+)",
      lambda m: CommandResult("set_alarm", m.group(1).strip(), "")),
 
-    # "lock screen" / "lock" / IT: "blocca lo schermo"
-    (r"lock(?:\s+(?:the\s+)?(?:screen|computer|pc))?|blocca(?:\s+lo\s+schermo)?",
-     lambda m: _lock_screen()),
-
-    # "shutdown" / "shut down" / "restart" / "reboot"
-    (r"(shut\s*down|restart|reboot)(?:\s+(?:the\s+)?(?:computer|pc))?",
-     lambda m: CommandResult("confirm_power", m.group(1).replace(" ", ""),
-                              f"Are you sure you want to {m.group(1)}? Say 'yes' to confirm.")),
-
-    # "yes" confirmation for shutdown/restart (handled in widget)
-    (r"^yes$",
-     lambda m: CommandResult("confirm_yes", "", "Okay!")),
-
-    # "mute" / "unmute" / IT: "silenzia" / "zitto" / "riattiva audio"
-    (r"\b(mute|unmute)\b",
-     lambda m: _toggle_mute(m.group(1))),
-    (r"\b(?:silence|zitto|silenzia)\b",
-     lambda m: _toggle_mute("mute")),
-    (r"\b(?:unsilence|riattiva(?:\s+audio)?)\b",
-     lambda m: _toggle_mute("unmute")),
-
-    # --- Todo list commands ---
-    (r"(?:add\s+(?:a\s+)?todo|add\s+to\s+(?:my\s+)?(?:to-?do|list))\s+(.+)",
-     lambda m: CommandResult("todo_add", m.group(1).strip(), "")),
-
-    (r"(?:show|list|what(?:'s| are))\s+(?:my\s+)?(?:to-?do(?:s|'?s)?|tasks?|list)",
-     lambda m: CommandResult("todo_list", "", "")),
-
-    (r"(?:done\s+with|finish(?:ed)?|complete(?:d)?|check\s+off)\s+(.+)",
-     lambda m: CommandResult("todo_complete", m.group(1).strip(), "")),
-
-    (r"(?:remove|delete)\s+(?:todo\s+)?(.+)",
-     lambda m: CommandResult("todo_remove", m.group(1).strip(), "")),
-
-    # --- Companion mode ---
-    (r"(?:follow\s+me|companion\s+mode|come\s+with\s+me)",
-     lambda m: CommandResult("companion_on", "", "I'll follow you around!")),
-
-    (r"(?:stop\s+following|stay\s+(?:there|put))",
-     lambda m: CommandResult("companion_off", "", "Okay, I'll stay put.")),
-
-    # --- Briefing ---
-    (r"(?:morning\s+)?(?:\bbrief(?:ing)?\b|\bsummary\b|\breport\b)",
-     lambda m: CommandResult("briefing", "", "")),
-
-    # --- Tell me a joke / fact ---
-    (r"(?:tell\s+me\s+a\s+)?(?:\bjoke\b|fun\s+fact|\bfact\b)(?:\s+please)?",
-     lambda m: CommandResult("joke", "", "")),
-
-    # ===================================================================
-    # Phase 1: System Control (new commands)
-    # ===================================================================
-
-    # "set volume to 50%" / "volume 30 percent" / IT: "metti il volume a 50"
+    # Volume with explicit number
     (r"(?:set\s+)?(?:volume|vol)\s+(?:to\s+)?(\d+)(?:\s+percent)?\s*%?",
      lambda m: _set_volume_pct(int(m.group(1)))),
     (r"(?:alza|abbassa|metti)\s+(?:il\s+)?(?:volume|vol)\s+(?:a\s+)?(\d+)",
      lambda m: _set_volume_pct(int(m.group(1)))),
 
-    # "brightness up/down"
-    (r"(?:turn\s+)?brightness\s+(up|down)",
-     lambda m: _brightness(m.group(1))),
-
-    # "empty recycle bin" / "empty trash"
-    (r"(?:empty|clear)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)",
-     lambda m: _empty_recycle_bin()),
-
-    # "show desktop" / "minimize all" / IT: "mostra desktop" / "minimizza tutto"
-    (r"(?:show\s+(?:the\s+)?desktop|minimize\s+(?:all|everything)|mostra\s+(?:il\s+)?desktop|minimizza\s+tutto)",
-     lambda m: _show_desktop()),
-
-    # "sleep" / "hibernate" (power action) - distinct from "rest/chill"
-    (r"(?:put\s+(?:the\s+)?(?:computer|pc)\s+to\s+)?sleep\s+(?:the\s+)?(?:computer|pc|mode)|hibernate",
-     lambda m: _sleep_pc()),
-
-    # "switch window" / "alt tab"
-    (r"(?:switch\s+window|alt\s+tab|next\s+window)",
-     lambda m: _switch_window()),
-
-    # "open task manager"
-    (r"open\s+task\s+manager",
-     lambda m: _open_specific_app("taskmgr", "Task Manager")),
-
-    # "kill [process]" / "force close [process]"
-    (r"(?:kill|force\s+close)\s+(.+)",
-     lambda m: _kill_process(m.group(1).strip())),
-
-    # "check disk space" / "how much space"
-    (r"(?:check\s+)?(?:disk|drive|storage)\s+space|how\s+much\s+(?:disk\s+)?space",
-     lambda m: _check_disk_space()),
-
-    # "toggle wifi" / "wifi on/off"
-    (r"(?:toggle\s+)?wi-?fi\s*(on|off)?",
-     lambda m: _toggle_wifi(m.group(1))),
-
-    # "toggle bluetooth" / "bluetooth on/off"
-    (r"(?:toggle\s+)?bluetooth\s*(on|off)?",
-     lambda m: _toggle_bluetooth(m.group(1))),
-
-    # "open settings" / "open settings [page]"
-    (r"open\s+(?:windows\s+)?settings(?:\s+(?:to\s+)?(.+))?",
-     lambda m: _open_settings_page(m.group(1))),
-
-    # "dark mode" / "light mode" / "toggle dark mode"
-    (r"(?:toggle\s+|switch\s+to\s+)?(?:(dark|light)\s+mode)",
-     lambda m: _toggle_theme(m.group(1))),
-
-    # "check speed" / "speed test" / "internet speed"
-    (r"(?:check\s+)?(?:internet\s+|download\s+|network\s+)?speed(?:\s+test)?",
-     lambda m: CommandResult("speed_test", "", "")),
-
-    # ===================================================================
-    # Phase 2: Files & Clipboard
-    # ===================================================================
-
-    # "open downloads" / "open desktop" / "open documents"
-    (r"open\s+(downloads?|desktop|documents?|pictures?|music|videos?)\s*(?:folder)?",
-     lambda m: _open_user_folder(m.group(1).strip())),
-
-    # "find file [name]" / "search for file [name]"
-    (r"(?:find|search\s+for)\s+(?:a\s+)?file\s+(?:called\s+|named\s+)?(.+)",
-     lambda m: CommandResult("find_file", m.group(1).strip(), f"Searching for {m.group(1).strip()}...")),
-
-    # "read clipboard" / "what's on clipboard" / "what did I copy"
-    (r"(?:read\s+(?:my\s+)?clipboard|what(?:'s| is| did I)\s+(?:on\s+(?:my\s+)?clipboard|copy))",
-     lambda m: CommandResult("read_clipboard", "", "")),
-
-    # "clear clipboard"
-    (r"clear\s+(?:my\s+)?clipboard",
-     lambda m: _clear_clipboard()),
-
-    # "save clipboard" / "save what I copied"
-    (r"save\s+(?:my\s+)?(?:clipboard|what\s+I\s+copied)",
-     lambda m: CommandResult("save_clipboard", "", "")),
-
-    # "create file [name]" / "new file [name]"
-    (r"(?:create|new)\s+(?:a\s+)?(?:text\s+)?file(?:\s+(?:called|named)\s+(.+))?",
-     lambda m: _create_text_file(m.group(1))),
-
-    # "open recent [folder]" / "open last modified file in [folder]"
-    (r"(?:open\s+(?:the\s+)?)?(?:most\s+)?\brecent\s+(?:file|download|desktop|document|picture|music|video)s?(?:\s+(?:in|from)\s+)?(downloads?|desktop|documents?|pictures?|music|videos?)?",
-     lambda m: _open_recent_file(m.group(1))),
-
-    # "rename file [old] to [new]" / "rename [old] to [new]"
-    (r"rename\s+(?:file\s+)?(.+?)\s+to\s+(.+)",
-     lambda m: _rename_file(m.group(1).strip(), m.group(2).strip())),
-
-    # "move file [name] to [folder]" / "move [name] to downloads"
-    (r"move\s+(?:(?:the\s+)?file\s+)?(.+?)\s+to\s+(?:the\s+)?(downloads?|desktop|documents?|pictures?|music|videos?)(?:\s+folder)?",
-     lambda m: _move_file(m.group(1).strip(), m.group(2).strip())),
-
-    # "zip [folder]" / "zip folder [name]" / "compress [folder]"
-    (r"(?:zip|compress)\s+(?:folder\s+|the\s+)?(.+)",
-     lambda m: _zip_folder(m.group(1).strip())),
-
-    # ===================================================================
-    # Phase 3: Browser & Web (free APIs)
-    # ===================================================================
-
-    # "weather" / "what's the weather" / "weather in [city]"
-    (r"(?:what(?:'s| is)\s+the\s+)?weather(?:\s+(?:in|for)\s+(.+))?",
-     lambda m: CommandResult("weather", m.group(1) or "", "")),
-
-    # "forecast" / "tomorrow's weather"
-    (r"(?:weather\s+)?forecast(?:\s+(?:for\s+)?(?:tomorrow|(.+)))?|tomorrow'?s?\s+weather",
-     lambda m: CommandResult("forecast", m.group(1) or "", "")),
-
-    # Screen review — must be before Wikipedia "look up" to avoid hijacking
-    # "look at my screen" / "look up my screen" / "what do you see" / "what's on my screen"
-    (r"(?:look\s+(?:at|up)\s+(?:my|the|this)\s+screen|what(?:'s| is| do you see)\s+(?:on\s+)?(?:my|the)?\s*screen|what\s+do\s+you\s+see|tell\s+me\s+what\s+you\s+see|analyze\s+(?:my\s+)?screen|check\s+(?:my\s+)?screen)",
-     lambda m: CommandResult("screen_review", "", "")),
-
-    # "wikipedia [topic]" / "look up [topic]" / "what is [topic]"
-    (r"(?:wikipedia|wiki|look\s+up)\s+(.+)",
-     lambda m: CommandResult("wikipedia", m.group(1).strip(), "")),
-
-    # "news" / "headlines" / "what's the news"
-    (r"(?:what(?:'s| is| are)\s+the\s+)?(?:news|headlines|top\s+stories)",
-     lambda m: CommandResult("news", "", "")),
-
-    # "translate [text] to [lang]"
-    (r"translate\s+(.+?)\s+(?:to|into)\s+(\w+)",
-     lambda m: CommandResult("translate", f"{m.group(2).strip()}|{m.group(1).strip()}", "")),
-
-    # "define [word]" / "what does [word] mean"
-    (r"(?:define|definition\s+of)\s+(.+)|what\s+does\s+(\S+)\s+mean",
-     lambda m: CommandResult("define", (m.group(1) or m.group(2)).strip(), "")),
-
-    # "exchange rate" / "convert [amount] [from] to [to]"
-    (r"(?:exchange\s+rate|convert)\s+(?:(\d+)\s+)?(\w+)\s+to\s+(\w+)",
-     lambda m: CommandResult("exchange_rate",
-                              f"{m.group(2).upper()}|{m.group(3).upper()}|{m.group(1) or '1'}", "")),
-
-    # "is it a holiday" / "any holidays today"
-    (r"(?:is\s+(?:it|today)\s+a\s+)?(?:public\s+)?holiday|any\s+holidays?\s+today",
-     lambda m: CommandResult("holiday_check", "", "")),
-
-    # "sunrise" / "sunset" / "sunrise and sunset"
-    (r"(?:what(?:'s| is| time is)\s+)?(?:the\s+)?(?:sunrise|sunset)(?:\s+(?:and|&)\s+(?:sunrise|sunset))?",
-     lambda m: CommandResult("sun_times", "", "")),
-
-    # ===================================================================
-    # Phase 4: Time & Productivity (new)
-    # ===================================================================
-
-    # "what day is [date]" / "what day of the week is March 25"
-    (r"what\s+day\s+(?:is|of\s+the\s+week\s+is)\s+(.+)",
-     lambda m: _day_of_week(m.group(1).strip())),
-
-    # "pomodoro" / "start pomodoro"
-    (r"(?:start\s+(?:a\s+)?)?pomodoro",
-     lambda m: CommandResult("pomodoro", "", "Starting a 25-minute focus session!")),
-
-    # "uptime" / "how long has my pc been on"
-    (r"(?:pc\s+)?uptime|how\s+long\s+(?:has\s+(?:my\s+)?(?:pc|computer)\s+been\s+(?:on|running))",
-     lambda m: _pc_uptime()),
-
-    # "countdown to [date]" / "how many days until [date]"
-    (r"(?:how\s+many\s+days?\s+(?:until|till|to)|countdown\s+to)\s+(.+)",
-     lambda m: _countdown_to(m.group(1).strip())),
-
-    # "what date is it" / "today's date"
-    (r"what(?:'s|\s+is)\s+(?:the\s+|today'?s?\s+)?date|today'?s?\s+date",
-     lambda m: _get_date()),
-
-    # "time between [date] and [date]" / "how long between [date] and [date]"
-    (r"(?:time|how\s+(?:long|many\s+days?))\s+between\s+(.+?)\s+and\s+(.+)",
-     lambda m: _time_between_dates(m.group(1).strip(), m.group(2).strip())),
-
-    # "list timers" / "show timers" / "active timers"
-    (r"(?:list|show|active|my)\s+timers?|what\s+timers",
-     lambda m: CommandResult("list_timers", "", "")),
-
-    # "cancel timer" / "stop timer" / "cancel [name] timer"
-    (r"(?:cancel|stop|clear)\s+(?:(?:the\s+)?(.+?)\s+)?timer",
-     lambda m: CommandResult("cancel_timer", (m.group(1) or "").strip(), "")),
-
-    # ===================================================================
-    # Phase 5: Conversation (Groq-driven)
-    # ===================================================================
-
-    # "roast me"
-    (r"roast\s+me",
-     lambda m: CommandResult("groq_prompt", "roast",
-                              "")),  # handled in widget
-
-    # "motivate me" / "give me motivation"
-    (r"(?:motivate\s+me|give\s+me\s+(?:a\s+)?motivation(?:al\s+(?:line|quote))?)",
-     lambda m: CommandResult("groq_prompt", "motivate", "")),
-
-    # "proofread [text]"
-    (r"proofread\s+(.+)",
-     lambda m: CommandResult("groq_prompt", f"proofread|{m.group(1).strip()}", "")),
-
-    # "help me name [thing]"
-    (r"(?:help\s+me\s+)?name\s+(?:a\s+|my\s+)?(.+)",
-     lambda m: CommandResult("groq_prompt", f"name|{m.group(1).strip()}", "")),
-
-    # "suggest something to watch/eat"
-    (r"(?:suggest|recommend)\s+(?:something\s+to\s+)?(watch|eat)",
-     lambda m: CommandResult("groq_prompt", f"suggest_{m.group(1)}", "")),
-
-    # "quiz me on [topic]"
-    (r"quiz\s+me\s+(?:on|about)\s+(.+)",
-     lambda m: CommandResult("groq_prompt", f"quiz|{m.group(1).strip()}", "")),
-
-    # "draft email about [topic]" / "write email about..."
-    (r"(?:draft|write)\s+(?:an?\s+)?email\s+(?:about\s+)?(.+)",
-     lambda m: CommandResult("groq_prompt", f"email|{m.group(1).strip()}", "")),
-
-    # "explain [concept] simply"
-    (r"explain\s+(.+?)(?:\s+simply|\s+like\s+I'?m\s+\d+)?",
-     lambda m: CommandResult("groq_prompt", f"explain|{m.group(1).strip()}", "")),
-
-    # "summarize [text]"
-    (r"summarize\s+(.+)",
-     lambda m: CommandResult("groq_prompt", f"summarize|{m.group(1).strip()}", "")),
-
-    # "brainstorm [topic]"
-    (r"brainstorm\s+(.+)",
-     lambda m: CommandResult("groq_prompt", f"brainstorm|{m.group(1).strip()}", "")),
-
-    # ===================================================================
-    # Phase 6: Media Control
-    # ===================================================================
-
-    # "play" / "pause" / "play/pause" / IT: "pausa" / "riprendi"
+    # Media keys (bare words, speed-critical)
     (r"^(?:play|pause|play\s*/?\s*pause)$",
      lambda m: _media_key("play_pause")),
     (r"\b(?:pausa|stop\s+music|pause\s+music)\b",
      lambda m: _media_key("play_pause")),
     (r"\b(?:resume|riprendi|play\s+music)\b",
      lambda m: _media_key("play_pause")),
-
-    # "next track" / "next song" / "skip" / IT: "canzone successiva" / "avanti"
     (r"(?:next(?:\s+(?:track|song))?|skip(?:\s+(?:track|song))?|canzone\s+successiva|avanti)",
      lambda m: _media_key("next")),
-
-    # "previous track" / "previous song" / "go back" / IT: "canzone precedente" / "indietro"
     (r"(?:prev(?:ious)?(?:\s+(?:track|song))?|go\s+back(?:\s+(?:a\s+)?(?:track|song))?|canzone\s+precedente|indietro)",
      lambda m: _media_key("prev")),
 
-    # "what's playing" / "what song is this"
-    (r"what(?:'s|\s+is)\s+(?:playing|this\s+song)|current\s+(?:track|song)",
-     lambda m: CommandResult("whats_playing", "", "")),
+    # "yes" confirmation for pending actions
+    (r"^yes$",
+     lambda m: CommandResult("confirm_yes", "", "Okay!")),
 
-    # "mute mic" / "unmute mic"
-    (r"(mute|unmute)\s+(?:my\s+)?(?:mic|microphone)",
-     lambda m: CommandResult("toggle_mic", m.group(1), "")),
-
-    # ===================================================================
-    # Phase 7: Smart Awareness (queryable)
-    # ===================================================================
-
-    # "system status" / "cpu usage" / "ram usage" / "battery level"
-    (r"(?:system\s+status|cpu\s+usage|ram\s+usage|battery\s+(?:level|status))",
-     lambda m: CommandResult("system_status", "", "")),
-
-    # "top processes" / "what's using cpu"
-    (r"(?:top\s+(?:processes|apps)|what(?:'s|\s+is)\s+(?:using|eating)\s+(?:my\s+)?(?:cpu|ram|memory))",
-     lambda m: CommandResult("top_processes", "", "")),
-
-    # "how long have I been on" / "session time"
-    (r"(?:how\s+long\s+(?:have\s+I\s+)?been\s+on|session\s+time|time\s+on\s+(?:pc|computer))",
-     lambda m: CommandResult("session_time", "", "")),
-
-    # "how long in vs code" / "vs code time"
-    (r"(?:how\s+long\s+(?:have\s+I\s+)?been\s+in\s+(?:vs\s*code|visual\s+studio)|vs\s*code\s+time|vs\s*code\s+screen\s*time)",
-     lambda m: CommandResult("vscode_time", "", "")),
-
-    # "posture check" / "how long sitting" / "am I sitting too long"
-    (r"(?:posture\s+(?:check|reminder)|how\s+long\s+(?:have\s+I\s+)?(?:been\s+)?sitting|sitting\s+too\s+long)",
-     lambda m: CommandResult("posture_check", "", "")),
-
-    # "last break" / "when was my last break"
-    (r"(?:(?:when\s+(?:was|did)\s+)?(?:my\s+)?last\s+break|break\s+history)",
-     lambda m: CommandResult("last_break", "", "")),
-
-    # "how many commands" / "command count"
-    (r"(?:how\s+many\s+commands|command\s+count|commands?\s+today|commands?\s+used)",
-     lambda m: CommandResult("command_count", "", "")),
-
-    # "your mood" / "how are you feeling" / "what's your mood"
-    (r"(?:(?:what(?:'s|\s+is)\s+)?your\s+mood|how\s+(?:are\s+)?you\s+feeling|how\s+do\s+you\s+feel)",
-     lambda m: CommandResult("fish_mood", "", "")),
-
-    # "daily summary" / "day summary" / "end of day report"
-    (r"(?:daily\s+summary|day\s+summary|end\s+of\s+day(?:\s+report)?|today(?:'s)?\s+summary|summarize\s+(?:my\s+)?day)",
-     lambda m: CommandResult("daily_summary", "", "")),
-
-    # "app open too long" / "what app has been open the longest"
-    (r"(?:(?:which|what)\s+app\s+(?:has\s+been\s+)?(?:open(?:ed)?\s+)?(?:the\s+)?(?:longest|too\s+long)|app\s+(?:too\s+long|open\s+longest))",
-     lambda m: CommandResult("app_too_long", "", "")),
-
-    # "media sleep timer" / "pause music after X minutes" / "sleep timer X minutes"
-    (r"(?:(?:media|music)\s+sleep\s+timer|(?:pause|stop)\s+(?:music|media)\s+(?:after|in)\s+(\d+)\s*(?:min(?:ute)?s?)|sleep\s+timer\s+(?:for\s+)?(\d+)\s*(?:min(?:ute)?s?))",
-     lambda m: CommandResult("media_sleep_timer", m.group(1) or m.group(2) or "30", "")),
-
-    # ===================================================================
-    # Screen Review
-    # ===================================================================
-
-    # "review this design" / "review this code" / "review the copy" / "review this data"
-    (r"review\s+(?:this\s+|the\s+)?(design|code|copy|data)",
-     lambda m: CommandResult("screen_review", m.group(1), "")),
-
-    # "review this" / "review my screen" / "what do you think" / "be honest" / "critique this"
-    (r"(?:review\s+(?:this|my\s+screen)|what\s+do\s+you\s+think|be\s+honest|critique\s+this|roast\s+my\s+screen)",
-     lambda m: CommandResult("screen_review", "", "")),
-
-    # "where?" / "where is that?" / "show me" / "point at it" — fish moves to the thing it was talking about
-    (r"(?:where(?:\s+(?:is\s+(?:that|it)|do\s+you\s+see\s+(?:it|that)))?[?\s]*$|show\s+me(?:\s+where)?|point\s+(?:at|to)\s+it)",
-     lambda m: CommandResult("point_at_screen", "", "")),
-
-    # ===================================================================
-    # Phase 9: Windows & Desktop (continued)
-    # ===================================================================
-
-    # "next desktop" / "switch desktop" / "next virtual desktop"
-    (r"(?:next|switch(?:\s+to\s+next)?)\s+(?:virtual\s+)?desktop",
-     lambda m: _switch_virtual_desktop("next")),
-
-    # "previous desktop" / "last desktop"
-    (r"(?:prev(?:ious)?|last|back)\s+(?:virtual\s+)?desktop",
-     lambda m: _switch_virtual_desktop("prev")),
-
-    # "task view" / "show all windows" / "show open windows"
-    (r"(?:task\s+view|show\s+(?:all\s+)?(?:open\s+)?windows|overview)",
-     lambda m: _task_view()),
-
-    # "move window to other monitor" / "move to next monitor"
-    (r"(?:move|send)\s+(?:(?:the\s+)?window\s+)?(?:to\s+)?(?:(?:the\s+)?(?:other|next|right)\s+monitor|monitor\s+(?:right|two|2))",
-     lambda m: _move_window_to_monitor("right")),
-
-    # "move window to left monitor"
-    (r"(?:move|send)\s+(?:(?:the\s+)?window\s+)?(?:to\s+)?(?:(?:the\s+)?(?:left|prev(?:ious)?)\s+monitor|monitor\s+(?:left|one|1))",
-     lambda m: _move_window_to_monitor("left")),
-
-    # ===================================================================
-    # Phase 10: Quick Launchers & Shortcuts (continued)
-    # ===================================================================
-
-    # "morning routine" / "start my day" / "good morning routine"
-    (r"(?:(?:start\s+)?(?:my\s+)?morning(?:\s+routine)?|start\s+my\s+day|good\s+morning\s+routine)",
-     lambda m: _morning_routine()),
-
-    # "launch [name] shortcut" / "run shortcut [name]"
-    (r"(?:launch|run|open|start)\s+(?:(?:the\s+)?shortcut\s+)?[\"']?(.+?)[\"']?\s+shortcut",
-     lambda m: _run_quick_launch(m.group(1))),
-
-    # "run [name]" — must be after more specific patterns
-    (r"(?:launch|run)\s+(?:shortcut\s+)?[\"']?(.+?)[\"']?$",
-     lambda m: _run_quick_launch(m.group(1))),
-
-    # "add shortcut [name] [target]"
-    (r"(?:add|save|create)\s+(?:a\s+)?shortcut\s+[\"']?(.+?)[\"']?\s+(?:for|to|as)\s+(.+)",
-     lambda m: _add_quick_launch(m.group(1), m.group(2))),
-
-    # "remove shortcut [name]"
-    (r"(?:remove|delete)\s+(?:the\s+)?shortcut\s+[\"']?(.+?)[\"']?$",
-     lambda m: _remove_quick_launch(m.group(1))),
-
-    # "list shortcuts" / "show shortcuts" / "my shortcuts"
-    (r"(?:(?:list|show)\s+(?:my\s+)?(?:shortcuts|launchers)|my\s+shortcuts)",
-     lambda m: _list_quick_launches()),
-
-    # ===================================================================
-    # Phase 8: Games & Fun (extras)
-    # ===================================================================
-
-    # "flip a coin" / "heads or tails"
-    (r"(?:flip\s+a\s+coin|heads\s+or\s+tails|coin\s+flip)",
-     lambda m: _flip_coin()),
-
-    # "roll a dice" / "roll [N] dice" / "roll d20"
-    (r"roll\s+(?:a\s+)?(?:(\d+)\s+)?(?:d(?:ice|(\d+))|dice)",
-     lambda m: _roll_dice(m.group(1), m.group(2))),
-
-    # "random number" / "random number between X and Y" / "pick a number"
-    (r"(?:random\s+number|pick\s+a\s+number)(?:\s+(?:between\s+)?(\d+)\s+(?:and|to)\s+(\d+))?",
-     lambda m: _random_number(m.group(1), m.group(2))),
-
-    # "high scores" / "my scores"
-    (r"(?:show\s+)?(?:my\s+)?(?:high\s+)?scores",
-     lambda m: CommandResult("high_scores", "", "")),
+    # List/cancel timers (references internal widget state)
+    (r"(?:list|show|active|my)\s+timers?|what\s+timers",
+     lambda m: CommandResult("list_timers", "", "")),
+    (r"(?:cancel|stop|clear)\s+(?:(?:the\s+)?(.+?)\s+)?timer",
+     lambda m: CommandResult("cancel_timer", (m.group(1) or "").strip(), "")),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: AI intent classification system prompt
+# ---------------------------------------------------------------------------
+
+_INTENT_SYSTEM_PROMPT = """\
+You are a command classifier for a desktop companion called Little Fish.
+Given user speech, extract the intent and parameters.
+
+Available intents:
+
+Music & Media:
+- youtube_search: search/play on YouTube. params: {"query": "..."}
+- spotify_search: search/play on Spotify. params: {"query": "..."}
+- media_play_pause: toggle play/pause. params: {}
+- media_next: next track. params: {}
+- media_prev: previous track. params: {}
+- whats_playing: what song is playing. params: {}
+- media_sleep_timer: stop media after N minutes. params: {"minutes": 30}
+
+Web & Search:
+- search_google: search Google. params: {"query": "..."}
+- open_website: open a website by name. params: {"site": "google|reddit|github|youtube|twitter|instagram|wikipedia|stackoverflow|twitch|spotify|netflix|discord"}
+- open_url: open a specific URL. params: {"url": "https://..."}
+
+Apps & Files:
+- open_app: launch an application. params: {"app": "..."}
+- close_app: close an application. params: {"app": "..."}
+- switch_app: switch to a running app. params: {"app": "..."}
+- kill_process: force close a process. params: {"name": "..."}
+- open_folder: open a folder. params: {"folder": "downloads|desktop|documents|pictures|music|videos"}
+- open_file_explorer: open file explorer. params: {}
+- open_file: open a file from a folder. params: {"file": "...", "folder": "downloads|desktop|documents"}
+- create_file: create a text file. params: {"name": "..."}
+- find_file: search for a file. params: {"name": "..."}
+
+System Control:
+- set_volume: set exact volume percentage. params: {"level": 0-100}
+- volume_change: volume up or down. params: {"direction": "up|down"}
+- mute: mute audio. params: {}
+- unmute: unmute audio. params: {}
+- lock_screen: lock the computer. params: {}
+- show_desktop: minimize all windows. params: {}
+- take_screenshot: take a screenshot. params: {}
+- brightness: change brightness. params: {"direction": "up|down"}
+- power: shutdown/restart/sleep. params: {"action": "shutdown|restart|sleep"}
+- disk_space: check disk space. params: {}
+- wifi_toggle: toggle wi-fi. params: {"state": "on|off"}
+- open_settings: open Windows settings. params: {"page": "display|sound|wifi|bluetooth|apps|update"}
+- theme: switch dark/light mode. params: {"mode": "dark|light"}
+- system_status: check CPU/RAM/battery. params: {}
+- top_processes: top resource-using processes. params: {}
+- empty_trash: empty recycle bin. params: {}
+
+Window Management:
+- window_snap: snap window left or right. params: {"direction": "left|right"}
+- window_maximize: maximize window. params: {}
+- window_minimize: minimize current window. params: {}
+- close_window: close current window (Alt+F4). params: {}
+- pin_window: toggle always-on-top. params: {}
+- switch_window: alt-tab to next window. params: {}
+- switch_desktop: next/prev virtual desktop. params: {"direction": "next|prev"}
+- task_view: show task view / all windows. params: {}
+- move_to_monitor: move window to other monitor. params: {"direction": "left|right"}
+
+Time & Productivity:
+- tell_time: current time. params: {}
+- tell_date: current date. params: {}
+- set_timer: set a timer. params: {"amount": 5, "unit": "minutes", "label": ""}
+- set_reminder: set a reminder. params: {"amount": 5, "unit": "minutes", "message": "..."}
+- pomodoro: start 25-min focus session. params: {}
+- uptime: PC uptime. params: {}
+- countdown: days until a date. params: {"date": "..."}
+- day_of_week: what day of the week is a date. params: {"date": "..."}
+- session_time: how long user has been on. params: {}
+- posture_check: sitting time / posture reminder. params: {}
+- daily_summary: end-of-day summary. params: {}
+- command_count: how many commands used. params: {}
+- last_break: when was the last break. params: {}
+
+Todos:
+- todo_add: add a todo item. params: {"task": "..."}
+- todo_list: list/show todos. params: {}
+- todo_complete: mark todo as done. params: {"task": "..."}
+- todo_remove: remove a todo. params: {"task": "..."}
+
+Fish Companion:
+- greeting: user says hi/hello/good morning/good night. params: {"type": "hello|morning|night"}
+- how_are_you: asking how the fish is doing. params: {}
+- fish_mood: asking fish's mood. params: {}
+- rest_mode: fish should be quiet / take a break. params: {}
+- come_here: fish should come to cursor. params: {}
+- hide_fish: fish should hide / go away / disappear. params: {}
+- companion_on: fish should follow the user around. params: {}
+- companion_off: fish should stop following. params: {}
+- play_game: play a specific game. params: {"game": "snake|pong|flappy|breakout|minesweeper|memory|trivia|whack|reaction|typing|catch"}
+- game_picker: browse / open games menu. params: {}
+- play_hobby: do a hobby activity. params: {"hobby": "painting|gaming|gardening|journaling|piano|random"}
+- screen_review: look at / review the screen. params: {"focus": "design|code|copy|data"}
+- point_at_screen: point at something on screen. params: {}
+- high_scores: show game scores. params: {}
+
+Info & Knowledge:
+- weather: check weather. params: {"city": "..."}
+- forecast: weather forecast. params: {"city": "..."}
+- wikipedia: look up a topic. params: {"topic": "..."}
+- news: news headlines. params: {}
+- translate: translate text. params: {"text": "...", "language": "..."}
+- define: define a word. params: {"word": "..."}
+- exchange_rate: currency conversion. params: {"from": "USD", "to": "EUR", "amount": "1"}
+- holiday_check: is today a holiday. params: {}
+- sun_times: sunrise/sunset times. params: {}
+- briefing: morning briefing / summary. params: {}
+- joke: tell a joke or fun fact. params: {}
+
+Clipboard:
+- clipboard_read: read what's on clipboard. params: {}
+- clipboard_clear: clear clipboard. params: {}
+- clipboard_save: save clipboard to file. params: {}
+
+Creative & AI:
+- groq_prompt: AI-powered creative request. params: {"type": "roast|motivate|quiz|explain|summarize|brainstorm|email|proofread|name|suggest_watch|suggest_eat", "topic": "..."}
+
+Fun:
+- flip_coin: flip a coin. params: {}
+- roll_dice: roll dice. params: {"count": 1, "sides": 6}
+- random_number: random number in range. params: {"low": 1, "high": 100}
+
+Other:
+- mic_toggle: mute/unmute microphone. params: {"action": "mute|unmute"}
+- quick_launch: run a saved shortcut. params: {"name": "..."}
+- speed_test: internet speed test. params: {}
+- app_too_long: which app has been open longest. params: {}
+- vscode_time: time spent in VS Code. params: {}
+- chat: NOT a command, just conversation. params: {}
+
+Rules:
+- If the user is clearly having a conversation or being casual, return "chat"
+- If unsure between a command and chat, return "chat"
+- Extract parameters even if phrasing is unusual, casual, or in Italian
+- For open_app: any application name works, not just the listed ones
+- For play_hobby with no specific hobby mentioned, use "random"
+
+Examples:
+- "boot up youtube and put jazz" -> youtube_search, query="jazz"
+- "apri youtube e metti musica jazz" -> youtube_search, query="musica jazz"
+- "play with your hobby" -> play_hobby, hobby="random"
+- "metti un po di jazz" -> spotify_search, query="jazz"
+- "quanto e' tardi" -> tell_time
+- "che giorno e' oggi" -> tell_date
+- "fammi sentire qualcosa di rilassante" -> spotify_search, query="relaxing music"
+- "come stai" -> how_are_you
+- "blocca lo schermo" -> lock_screen
+- "mostra il desktop" -> show_desktop
+- "apri chrome" -> open_app, app="chrome"
+- "passa a discord" -> switch_app, app="discord"
+- "apri documenti" -> open_folder, folder="documents"
+- "raccontami una barzelletta" -> joke
+- "dimmi le notizie" -> news
+- "che tempo fa a Roma" -> weather, city="Roma"
+- "quanti giorni mancano a Natale" -> countdown, date="December 25"
+- "I love swimming while listening to music" -> chat
+- "do you like playing around outside" -> chat
+
+Return ONLY valid JSON, nothing else:
+{"intent": "intent_name", "params": {...}, "confidence": 0.0-1.0}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +257,8 @@ class CommandParser:
     def __init__(self, groq_keys: list[str] = None, fish_name: str = ""):
         self._groq_keys = groq_keys or []
         self._groq_key_index = 0
+        self._groq_client = None
+        self._groq_module = None
         self._extra_patterns = []
         if fish_name and fish_name.lower().strip() not in ("little fish", ""):
             escaped = re.escape(fish_name.strip())
@@ -659,155 +267,393 @@ class CommandParser:
                  lambda m, fn=fish_name.strip(): CommandResult(
                      "greeting", "hello", f"Hey! You called me {fn}?"))
             )
+        # Initialize Groq client for intent classification
+        if self._groq_keys:
+            try:
+                import groq as _groq_mod
+                self._groq_module = _groq_mod
+                self._groq_client = _groq_mod.Groq(
+                    api_key=self._groq_keys[self._groq_key_index])
+            except ImportError:
+                pass
 
-    # Words that signal casual/conversational speech, not a command
-    _CASUAL_INDICATORS = frozenset({
-        "your", "while", "when", "with", "around", "outside",
-        "hobby", "yourself", "about", "because", "would", "could",
-        "should", "maybe", "probably", "think", "feel",
-    })
+    # ---------------------------------------------------------------
+    # Stage 1: Fast regex parse
+    # ---------------------------------------------------------------
 
-    def _is_casual_near_trigger(self, text: str, match_start: int, match_end: int) -> bool:
-        """Return True if a casual indicator word appears within 3 words of the match."""
-        words = text.split()
-        # Find the word indices that overlap with the match span
-        char_pos = 0
-        match_word_indices = set()
-        for i, w in enumerate(words):
-            word_end = char_pos + len(w)
-            if char_pos < match_end and word_end > match_start:
-                match_word_indices.add(i)
-            char_pos = word_end + 1  # +1 for space
-        if not match_word_indices:
-            return False
-        lo = max(0, min(match_word_indices) - 3)
-        hi = min(len(words), max(match_word_indices) + 4)
-        for i in range(lo, hi):
-            if words[i].lower().strip(".,!?") in self._CASUAL_INDICATORS:
-                return True
-        return False
+    def _fast_parse(self, text: str) -> Optional[CommandResult]:
+        """Try fast regex patterns for unambiguous, time-sensitive commands."""
+        for pattern, handler in _FAST_PATTERNS:
+            m = re.search(pattern, text)
+            if m:
+                return handler(m)
+        return None
+
+    # ---------------------------------------------------------------
+    # Stage 2: AI intent classification via Groq
+    # ---------------------------------------------------------------
+
+    def classify_intent(self, text: str) -> dict:
+        """Call Groq LLM to classify user speech into an intent."""
+        if not self._groq_client:
+            return {"intent": "chat", "params": {}, "confidence": 0.0}
+
+        last_error = None
+        for _ in range(len(self._groq_keys)):
+            try:
+                response = self._groq_client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[
+                        {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+                        {"role": "user", "content": text},
+                    ],
+                    max_tokens=150,
+                    temperature=0.0,
+                )
+                raw = response.choices[0].message.content.strip()
+                # Strip markdown fences if the model wraps in ```json
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                print(f"[INTENT] Bad JSON from LLM: {raw!r}")
+                return {"intent": "chat", "params": {}, "confidence": 0.0}
+            except Exception as e:
+                last_error = e
+                # Rotate API key and rebuild client
+                self._groq_key_index = (
+                    (self._groq_key_index + 1) % len(self._groq_keys))
+                try:
+                    self._groq_client = self._groq_module.Groq(
+                        api_key=self._groq_keys[self._groq_key_index])
+                except Exception:
+                    pass
+
+        print(f"[INTENT] Classification failed after key rotation: {last_error}")
+        return {"intent": "chat", "params": {}, "confidence": 0.0}
+
+    # ---------------------------------------------------------------
+    # Build CommandResult from classified intent
+    # ---------------------------------------------------------------
+
+    def _build_result(self, intent: str, params: dict) -> Optional[CommandResult]:
+        """Map a classified intent + params to a CommandResult."""
+
+        # --- Music & Media ---
+        if intent == "youtube_search":
+            return _youtube_search(params.get("query", ""))
+        elif intent == "spotify_search":
+            return _spotify_search(params.get("query", ""))
+        elif intent == "media_play_pause":
+            return _media_key("play_pause")
+        elif intent == "media_next":
+            return _media_key("next")
+        elif intent == "media_prev":
+            return _media_key("prev")
+        elif intent == "whats_playing":
+            return CommandResult("whats_playing", "", "")
+        elif intent == "media_sleep_timer":
+            return CommandResult("media_sleep_timer",
+                                 str(params.get("minutes", 30)), "")
+
+        # --- Web & Search ---
+        elif intent == "search_google":
+            return _google_search(params.get("query", ""))
+        elif intent == "open_website":
+            return _open_website(params.get("site", ""))
+        elif intent == "open_url":
+            return _open_url(params.get("url", ""))
+
+        # --- Apps & Files ---
+        elif intent == "open_app":
+            return _open_app(params.get("app", ""))
+        elif intent == "close_app":
+            return _close_app(params.get("app", ""))
+        elif intent == "switch_app":
+            return _switch_to_app(params.get("app", ""))
+        elif intent == "kill_process":
+            return _kill_process(params.get("name", ""))
+        elif intent == "open_folder":
+            return _open_folder(params.get("folder", ""))
+        elif intent == "open_file_explorer":
+            return _open_file_explorer()
+        elif intent == "open_file":
+            return _open_file_from_folder(
+                params.get("file", ""), params.get("folder", "downloads"))
+        elif intent == "create_file":
+            return _create_text_file(params.get("name"))
+        elif intent == "find_file":
+            name = params.get("name", "")
+            return CommandResult("find_file", name,
+                                 f"Searching for {name}...")
+
+        # --- System Control ---
+        elif intent == "set_volume":
+            return _set_volume_pct(int(params.get("level", 50)))
+        elif intent == "volume_change":
+            return _volume(params.get("direction", "up"))
+        elif intent == "mute":
+            return _toggle_mute("mute")
+        elif intent == "unmute":
+            return _toggle_mute("unmute")
+        elif intent == "lock_screen":
+            return _lock_screen()
+        elif intent == "show_desktop":
+            return _show_desktop()
+        elif intent == "take_screenshot":
+            return _take_screenshot()
+        elif intent == "brightness":
+            return _brightness(params.get("direction", "up"))
+        elif intent == "power":
+            action = params.get("action", "shutdown")
+            if action == "sleep":
+                return _sleep_pc()
+            return CommandResult(
+                "confirm_power", action,
+                f"Are you sure you want to {action}? Say 'yes' to confirm.")
+        elif intent == "disk_space":
+            return _check_disk_space()
+        elif intent == "wifi_toggle":
+            return _toggle_wifi(params.get("state"))
+        elif intent == "open_settings":
+            return _open_settings_page(params.get("page"))
+        elif intent == "theme":
+            return _toggle_theme(params.get("mode", "dark"))
+        elif intent == "system_status":
+            return CommandResult("system_status", "", "")
+        elif intent == "top_processes":
+            return CommandResult("top_processes", "", "")
+        elif intent == "empty_trash":
+            return _empty_recycle_bin()
+
+        # --- Window Management ---
+        elif intent == "window_snap":
+            return _snap_window(params.get("direction", "left"))
+        elif intent == "window_maximize":
+            return _snap_window("up")
+        elif intent == "window_minimize":
+            return _snap_window("down")
+        elif intent == "close_window":
+            return _close_current_window()
+        elif intent == "pin_window":
+            return _pin_window_on_top()
+        elif intent == "switch_window":
+            return _switch_window()
+        elif intent == "switch_desktop":
+            return _switch_virtual_desktop(params.get("direction", "next"))
+        elif intent == "task_view":
+            return _task_view()
+        elif intent == "move_to_monitor":
+            return _move_window_to_monitor(params.get("direction", "right"))
+
+        # --- Time & Productivity ---
+        elif intent == "tell_time":
+            return _get_time()
+        elif intent == "tell_date":
+            return _get_date()
+        elif intent == "set_timer":
+            amount = int(params.get("amount", 0))
+            unit = params.get("unit", "minutes")
+            label = params.get("label", "")
+            if label:
+                return _set_named_timer(label, amount, unit)
+            return _set_timer(amount, unit)
+        elif intent == "set_reminder":
+            return _set_reminder(
+                int(params.get("amount", 0)),
+                params.get("unit", "minutes"),
+                params.get("message", "Time's up!"))
+        elif intent == "pomodoro":
+            return CommandResult("pomodoro", "",
+                                 "Starting a 25-minute focus session!")
+        elif intent == "uptime":
+            return _pc_uptime()
+        elif intent == "countdown":
+            return _countdown_to(params.get("date", ""))
+        elif intent == "day_of_week":
+            return _day_of_week(params.get("date", ""))
+        elif intent == "session_time":
+            return CommandResult("session_time", "", "")
+        elif intent == "posture_check":
+            return CommandResult("posture_check", "", "")
+        elif intent == "daily_summary":
+            return CommandResult("daily_summary", "", "")
+        elif intent == "command_count":
+            return CommandResult("command_count", "", "")
+        elif intent == "last_break":
+            return CommandResult("last_break", "", "")
+
+        # --- Todos ---
+        elif intent == "todo_add":
+            return CommandResult("todo_add", params.get("task", ""), "")
+        elif intent == "todo_list":
+            return CommandResult("todo_list", "", "")
+        elif intent == "todo_complete":
+            return CommandResult("todo_complete", params.get("task", ""), "")
+        elif intent == "todo_remove":
+            return CommandResult("todo_remove", params.get("task", ""), "")
+
+        # --- Fish Companion ---
+        elif intent == "greeting":
+            gtype = params.get("type", "hello")
+            responses = {
+                "hello": "Hey there!",
+                "morning": "Good morning! Ready for today?",
+                "night": "Good night! Sleep well.",
+            }
+            return CommandResult("greeting", gtype,
+                                 responses.get(gtype, "Hey there!"))
+        elif intent == "how_are_you":
+            return CommandResult("status", "", "")
+        elif intent == "fish_mood":
+            return CommandResult("fish_mood", "", "")
+        elif intent == "rest_mode":
+            return CommandResult("rest_mode", "",
+                                 "I'll be quiet for a bit. Poke me when you need me.")
+        elif intent == "come_here":
+            return CommandResult("come_to_cursor", "", "Coming!")
+        elif intent == "hide_fish":
+            return CommandResult("hide", "",
+                                 "I'll be in the tray if you need me.")
+        elif intent == "companion_on":
+            return CommandResult("companion_on", "",
+                                 "I'll follow you around!")
+        elif intent == "companion_off":
+            return CommandResult("companion_off", "",
+                                 "Okay, I'll stay put.")
+        elif intent == "play_game":
+            game = params.get("game", "")
+            if game:
+                return CommandResult("play_game", game,
+                                     f"Let's play {game}!")
+            return CommandResult("game_picker", "",
+                                 "What should we play?")
+        elif intent == "game_picker":
+            return CommandResult("game_picker", "",
+                                 "What should we play?")
+        elif intent == "play_hobby":
+            hobby = params.get("hobby", "random")
+            return CommandResult("play_hobby", hobby, "")
+        elif intent == "screen_review":
+            return CommandResult("screen_review",
+                                 params.get("focus", "") or "", "")
+        elif intent == "point_at_screen":
+            return CommandResult("point_at_screen", "", "")
+        elif intent == "high_scores":
+            return CommandResult("high_scores", "", "")
+
+        # --- Info & Knowledge ---
+        elif intent == "weather":
+            return CommandResult("weather", params.get("city", ""), "")
+        elif intent == "forecast":
+            return CommandResult("forecast", params.get("city", ""), "")
+        elif intent == "wikipedia":
+            return CommandResult("wikipedia", params.get("topic", ""), "")
+        elif intent == "news":
+            return CommandResult("news", "", "")
+        elif intent == "translate":
+            lang = params.get("language", "")
+            text = params.get("text", "")
+            return CommandResult("translate", f"{lang}|{text}", "")
+        elif intent == "define":
+            return CommandResult("define", params.get("word", ""), "")
+        elif intent == "exchange_rate":
+            fr = params.get("from", "USD")
+            to = params.get("to", "EUR")
+            amt = params.get("amount", "1")
+            return CommandResult("exchange_rate", f"{fr}|{to}|{amt}", "")
+        elif intent == "holiday_check":
+            return CommandResult("holiday_check", "", "")
+        elif intent == "sun_times":
+            return CommandResult("sun_times", "", "")
+        elif intent == "briefing":
+            return CommandResult("briefing", "", "")
+        elif intent == "joke":
+            return CommandResult("joke", "", "")
+
+        # --- Clipboard ---
+        elif intent == "clipboard_read":
+            return CommandResult("read_clipboard", "", "")
+        elif intent == "clipboard_clear":
+            return _clear_clipboard()
+        elif intent == "clipboard_save":
+            return CommandResult("save_clipboard", "", "")
+
+        # --- Creative & AI ---
+        elif intent == "groq_prompt":
+            ptype = params.get("type", "")
+            topic = params.get("topic", "")
+            target = f"{ptype}|{topic}" if topic else ptype
+            return CommandResult("groq_prompt", target, "")
+
+        # --- Fun ---
+        elif intent == "flip_coin":
+            return _flip_coin()
+        elif intent == "roll_dice":
+            count = str(params.get("count", "")) if params.get("count") else None
+            sides = str(params.get("sides", "")) if params.get("sides") else None
+            return _roll_dice(count, sides)
+        elif intent == "random_number":
+            low = str(params.get("low", "")) if params.get("low") else None
+            high = str(params.get("high", "")) if params.get("high") else None
+            return _random_number(low, high)
+
+        # --- Other ---
+        elif intent == "mic_toggle":
+            return CommandResult("toggle_mic",
+                                 params.get("action", "mute"), "")
+        elif intent == "quick_launch":
+            return _run_quick_launch(params.get("name", ""))
+        elif intent == "speed_test":
+            return CommandResult("speed_test", "", "")
+        elif intent == "app_too_long":
+            return CommandResult("app_too_long", "", "")
+        elif intent == "vscode_time":
+            return CommandResult("vscode_time", "", "")
+
+        return None
+
+    # ---------------------------------------------------------------
+    # Main parse entry point
+    # ---------------------------------------------------------------
 
     def parse(self, text: str, from_chat: bool = False) -> Optional[CommandResult]:
-        """Parse a transcribed voice command. Returns None if nothing matched.
-        
-        When from_chat=True, longer conversational sentences skip ambiguous
-        regex matches and the Groq command classifier is disabled (the chat
-        window routes unmatched text to AI conversation instead).
-        """
-        clean = text.lower().strip()
-        word_count = len(clean.split())
+        """Parse user speech into a command.
 
-        # Try custom name patterns first
+        Two-stage system:
+          1. Fast regex for unambiguous, time-sensitive commands
+          2. Groq AI intent classification for everything else
+
+        Returns None if the text is conversational (not a command).
+        """
+        clean = text.strip().lower()
+
+        # Try custom name patterns first (wake word)
         for pattern, handler in self._extra_patterns:
             m = re.search(pattern, clean, re.IGNORECASE)
             if m:
                 return handler(m)
 
-        # Try regex patterns
-        # Actions that are too ambiguous to match inside longer chat sentences
-        _AMBIGUOUS_ACTIONS = {
-            "greeting", "rest_mode", "hide", "status", "confirm_yes",
-            "briefing", "joke",
-        }
-        # Actions with side effects that should NEVER fire from a conversational sentence
-        _DANGEROUS_IN_CHAT = {
-            "file", "confirm_power",
-        }
-        # Actions that should be skipped if a casual indicator is nearby
-        _CASUAL_SENSITIVE = {
-            "play_game", "game_picker", "open_app", "close_app",
-            "rest_mode", "hide", "volume", "media",
-        }
-        for pattern, handler in PATTERNS:
-            m = re.search(pattern, clean)
-            if m:
-                # In chat context with conversational sentences, skip
-                # dangerous side-effect patterns BEFORE executing the handler
-                if from_chat and word_count > 3:
-                    # Peek at the handler to see what it would return.
-                    # For safe (no-side-effect) handlers, run normally.
-                    # For dangerous ones, we need to check first.
-                    result = handler(m)
-                    if result.action in _DANGEROUS_IN_CHAT:
-                        continue
-                    if result.action in _AMBIGUOUS_ACTIONS:
-                        continue
+        # Stage 1: fast regex for time-sensitive commands
+        fast_result = self._fast_parse(clean)
+        if fast_result:
+            return fast_result
+
+        # Stage 2: AI intent classification
+        if self._groq_keys:
+            classified = self.classify_intent(clean)
+            intent = classified.get("intent", "chat")
+            confidence = classified.get("confidence", 0.0)
+
+            if intent != "chat" and confidence >= 0.7:
+                result = self._build_result(
+                    intent, classified.get("params", {}))
+                if result:
                     return result
-                result = handler(m)
-                # Casual indicator guard: if sentence sounds conversational
-                # near the trigger, skip to chat
-                if result.action in _CASUAL_SENSITIVE and word_count > 3:
-                    if self._is_casual_near_trigger(clean, m.start(), m.end()):
-                        continue
-                return result
-
-        # Groq LLM fallback — skip in chat context (chat routes to AI directly)
-        if self._groq_keys and not from_chat:
-            return self._groq_fallback(clean)
 
         return None
 
-    def _groq_fallback(self, text: str) -> Optional[CommandResult]:
-        """Use Groq Llama to classify the intent."""
-        try:
-            import groq as groq_module
-        except ImportError:
-            return None
 
-        prompt = (
-            "You are a command classifier for a desktop pet app. "
-            "The user said the following to their desktop companion. "
-            "Classify the intent into one of these categories and extract the target:\n"
-            "- open_url: user wants to open a website (target = URL)\n"
-            "- open_app: user wants to open an application (target = app name)\n"
-            "- close_app: user wants to close an app (target = app name)\n"
-            "- play_game: user wants to play a game (target = game name)\n"
-            "- greeting: user is greeting (target = morning/night/hello)\n"
-            "- rest_mode: user wants the pet to be quiet\n"
-            "- hide: user wants the pet to hide\n"
-            "- come_to_cursor: user wants the pet to come to them\n"
-            "- unknown: doesn't match any category\n\n"
-            f"User said: \"{text}\"\n\n"
-            "Respond in EXACTLY this format (no extra text):\n"
-            "ACTION: <action>\n"
-            "TARGET: <target>\n"
-            "RESPONSE: <short friendly response from the pet>"
-        )
-
-        last_error = None
-        for _ in range(len(self._groq_keys)):
-            key = self._groq_keys[self._groq_key_index]
-            try:
-                client = groq_module.Groq(api_key=key)
-                completion = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=100,
-                )
-                return self._parse_groq_response(completion.choices[0].message.content)
-            except Exception as e:
-                last_error = e
-                self._groq_key_index = (self._groq_key_index + 1) % len(self._groq_keys)
-
-        return None
-
-    @staticmethod
-    def _parse_groq_response(text: str) -> Optional[CommandResult]:
-        """Parse the structured response from Groq."""
-        action = target = response = ""
-        for line in text.strip().split("\n"):
-            line = line.strip()
-            if line.upper().startswith("ACTION:"):
-                action = line.split(":", 1)[1].strip().lower()
-            elif line.upper().startswith("TARGET:"):
-                target = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("RESPONSE:"):
-                response = line.split(":", 1)[1].strip()
-
-        if action and action != "unknown":
-            return CommandResult(action=action, target=target, response=response)
-        return None
 
 
 # ---------------------------------------------------------------------------
