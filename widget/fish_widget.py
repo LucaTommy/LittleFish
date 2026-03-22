@@ -1181,12 +1181,30 @@ class FishWidget(QWidget):
 
     def _parse_worker_loop(self):
         """Single background thread that processes parse requests sequentially."""
+        from core.voice import ConversationState
         while True:
             clean_text = self._parse_queue.get()
             if clean_text is None:
                 break
             try:
-                result = self._cmd_parser.parse(clean_text)
+                # During active voice conversation, skip the slow Groq
+                # classify (~2-3s) and only try fast regex.  Anything not
+                # matched by regex goes straight to chat.
+                in_conversation = self._voice.conversation_state not in (
+                    ConversationState.PASSIVE,)
+                if in_conversation:
+                    result = self._cmd_parser._fast_parse(clean_text.strip().lower())
+                    if result is None:
+                        # also check custom name patterns
+                        import re as _re
+                        for pat, handler in self._cmd_parser._extra_patterns:
+                            m = _re.search(pat, clean_text.strip().lower(), _re.IGNORECASE)
+                            if m:
+                                result = handler(m)
+                                break
+                    print(f"[PARSE] Fast-only (in conversation): {result}")
+                else:
+                    result = self._cmd_parser.parse(clean_text)
             except Exception as e:
                 import traceback
                 print(f"[CRASH] parse() failed: {e}")

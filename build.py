@@ -79,6 +79,9 @@ def build_fish():
         "--hidden-import", "mss.exception",
         "--hidden-import", "vosk",
         "--hidden-import", "edge_tts",
+        "--collect-all", "edge_tts",
+        "--hidden-import", "aiohttp",
+        "--hidden-import", "certifi",
         str(ROOT / "main.py"),
     ]
     print("Building Little Fish...")

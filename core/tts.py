@@ -141,12 +141,14 @@ class TTS:
             # Primary: Edge TTS
             try:
                 import edge_tts  # noqa: F401
+                print("[TTS] Using Edge TTS engine")
                 self._worker_edge()
                 return
-            except ImportError:
-                print("[TTS] edge_tts not available")
+            except ImportError as e:
+                print(f"[TTS] edge_tts not available: {e}")
 
             # Fallback: pyttsx3
+            print("[TTS] Falling back to pyttsx3")
             self._worker_pyttsx3()
         except Exception as e:
             print(f"[TTS] Worker crashed: {e}")
@@ -254,7 +256,9 @@ class TTS:
         """pyttsx3 offline TTS loop."""
         engine = self._init_pyttsx3()
         if engine is None:
+            print("[TTS] pyttsx3 init failed — no TTS available!")
             return
+        print("[TTS] Using pyttsx3 engine")
 
         while True:
             text = self._queue.get()
