@@ -1,36 +1,27 @@
+import sys
+import io
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+
 """
 Little Fish — a living desktop companion.
 Entry point: creates the application, loads config, shows the Fish.
 """
 
 import os
-import sys
 import ctypes
 import traceback
 import threading
 import faulthandler
 from pathlib import Path
 
-# ------------------------------------------------------------------
-# When packaged with PyInstaller --windowed, sys.stdout/stderr are
-# None (no console).  Redirect them to a log file so print(),
-# faulthandler, and exception hooks don't crash.
-# ------------------------------------------------------------------
-if sys.stdout is None or sys.stderr is None:
-    _log_dir = Path(os.environ.get("APPDATA", ".")) / "LittleFish"
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    _log_file = open(_log_dir / "littlefish.log", "a", encoding="utf-8")
-    if sys.stdout is None:
-        sys.stdout = _log_file
-    if sys.stderr is None:
-        sys.stderr = _log_file
+faulthandler.enable()  # Prints traceback on segfault/abort
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt
-
-faulthandler.enable()  # Prints traceback on segfault/abort
-
 from widget.fish_widget import FishWidget
 
 ICO_PATH = Path(__file__).parent / "littlefish.ico"
@@ -38,13 +29,19 @@ ICO_PATH = Path(__file__).parent / "littlefish.ico"
 
 # Global exception handlers — prevent silent crashes
 def _global_except_hook(exc_type, exc_value, exc_tb):
-    print(f"[UNHANDLED] {exc_type.__name__}: {exc_value}")
-    traceback.print_exception(exc_type, exc_value, exc_tb)
+    try:
+        print(f"[UNHANDLED] {exc_type.__name__}: {exc_value}")
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+    except Exception:
+        pass
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 def _thread_except_hook(args):
-    print(f"[THREAD CRASH] {args.exc_type.__name__}: {args.exc_value} in {args.thread}")
-    traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    try:
+        print(f"[THREAD CRASH] {args.exc_type.__name__}: {args.exc_value} in {args.thread}")
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    except Exception:
+        pass
 
 sys.excepthook = _global_except_hook
 threading.excepthook = _thread_except_hook
@@ -67,7 +64,10 @@ def _already_running() -> bool:
 
 def main():
     if _already_running():
-        print("Little Fish is already running!")
+        try:
+            print("Little Fish is already running!")
+        except Exception:
+            pass
         sys.exit(0)
 
     app = QApplication(sys.argv)
