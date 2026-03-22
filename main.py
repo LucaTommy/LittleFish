@@ -3,12 +3,28 @@ Little Fish — a living desktop companion.
 Entry point: creates the application, loads config, shows the Fish.
 """
 
+import os
 import sys
 import ctypes
 import traceback
 import threading
 import faulthandler
 from pathlib import Path
+
+# ------------------------------------------------------------------
+# When packaged with PyInstaller --windowed, sys.stdout/stderr are
+# None (no console).  Redirect them to a log file so print(),
+# faulthandler, and exception hooks don't crash.
+# ------------------------------------------------------------------
+if sys.stdout is None or sys.stderr is None:
+    _log_dir = Path(os.environ.get("APPDATA", ".")) / "LittleFish"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = open(_log_dir / "littlefish.log", "a", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = _log_file
+    if sys.stderr is None:
+        sys.stderr = _log_file
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt
