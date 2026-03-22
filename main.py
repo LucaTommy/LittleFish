@@ -2,13 +2,38 @@ import sys
 import os
 from pathlib import Path
 
-if sys.stderr is None or sys.stdout is None:
-    _log_dir = Path(os.environ.get('APPDATA', str(Path.home()))) / 'LittleFish'
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    if sys.stdout is None:
-        sys.stdout = open(_log_dir / 'stdout.log', 'a', encoding='utf-8', buffering=1)
-    if sys.stderr is None:
-        sys.stderr = open(_log_dir / 'stderr.log', 'a', encoding='utf-8', buffering=1)
+# Always log to file for debugging (especially important for .exe where console is hidden)
+_log_dir = Path(os.environ.get('APPDATA', str(Path.home()))) / 'LittleFish'
+_log_dir.mkdir(parents=True, exist_ok=True)
+
+class _TeeWriter:
+    """Write to both the original stream and a log file."""
+    def __init__(self, original, log_path):
+        self._original = original
+        self._log = open(log_path, 'w', encoding='utf-8', errors='replace', buffering=1)
+    def write(self, s):
+        if self._original is not None:
+            try:
+                self._original.write(s)
+            except Exception:
+                pass
+        try:
+            self._log.write(s)
+        except Exception:
+            pass
+    def flush(self):
+        if self._original is not None:
+            try:
+                self._original.flush()
+            except Exception:
+                pass
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+
+sys.stdout = _TeeWriter(sys.stdout, _log_dir / 'debug.log')
+sys.stderr = _TeeWriter(sys.stderr, _log_dir / 'debug_err.log')
 
 """
 Little Fish — a living desktop companion.

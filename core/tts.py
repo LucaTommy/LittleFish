@@ -37,6 +37,14 @@ def detect_language(text: str) -> str:
     return "it" if italian_hits >= 1 else "en"
 
 
+# Ensure SSL certificates are available (PyInstaller may not bundle them)
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+except ImportError:
+    pass
+
+
 class TTS:
     _mci_lock = threading.Lock()  # serialize all MCI calls across threads
 
@@ -59,12 +67,18 @@ class TTS:
         self._edge_voice_it = voice_cfg.get("edge_voice_it", "it-IT-ElsaNeural")
 
         # Init engine on background thread
+        self._start_worker()
+
+    def _start_worker(self):
+        """Start (or restart) the TTS worker thread."""
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
+        print("[TTS] Worker thread started")
 
     @property
     def is_speaking(self) -> bool:
         if self._speaking and not self._thread.is_alive():
+            print("[TTS] Worker thread died — resetting speaking state")
             self._speaking = False
         return self._speaking
 
@@ -82,6 +96,11 @@ class TTS:
     def say(self, text: str):
         """Queue text to be spoken. Non-blocking."""
         if self._enabled and text:
+            # Auto-restart worker if it crashed
+            if not self._thread.is_alive():
+                print("[TTS] Worker thread dead — restarting")
+                self._queue = queue.Queue()  # drop stale items
+                self._start_worker()
             # Set speaking immediately so mouth sync starts right away
             with self._lock:
                 self._speaking = True
@@ -111,24 +130,31 @@ class TTS:
 
     def _worker(self):
         """Background thread: route to the appropriate TTS engine."""
-        # ElevenLabs takes priority if configured
-        if self._elevenlabs_key and self._provider in ("elevenlabs", "edge"):
-            # Try ElevenLabs; fall back to Edge if voice resolution fails
-            voice_id = self._resolve_elevenlabs_voice()
-            if voice_id:
-                self._worker_elevenlabs(voice_id)
-                return
-
-        # Primary: Edge TTS
         try:
-            import edge_tts  # noqa: F401
-            self._worker_edge()
-            return
-        except ImportError:
-            pass
+            # ElevenLabs takes priority if configured
+            if self._elevenlabs_key and self._provider in ("elevenlabs", "edge"):
+                voice_id = self._resolve_elevenlabs_voice()
+                if voice_id:
+                    self._worker_elevenlabs(voice_id)
+                    return
 
-        # Fallback: pyttsx3
-        self._worker_pyttsx3()
+            # Primary: Edge TTS
+            try:
+                import edge_tts  # noqa: F401
+                self._worker_edge()
+                return
+            except ImportError:
+                print("[TTS] edge_tts not available")
+
+            # Fallback: pyttsx3
+            self._worker_pyttsx3()
+        except Exception as e:
+            print(f"[TTS] Worker crashed: {e}")
+            import traceback; traceback.print_exc()
+        finally:
+            with self._lock:
+                self._speaking = False
+            print("[TTS] Worker thread exiting")
 
     # ------------------------------------------------------------------
     # Edge TTS engine (primary)

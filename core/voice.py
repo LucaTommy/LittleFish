@@ -142,6 +142,7 @@ class VoiceRecorder(QObject):
         self._conv_state = ConversationState.PASSIVE
         self._conv_last_activity = 0.0  # monotonic timestamp
         self._manual_listen = False      # True when user clicks Listen button
+        self._detected_lang: str | None = None  # last detected speech language (for Whisper hint)
 
         # Local STT engines (try Vosk first, then faster-whisper)
         self._vosk_recognizer = None
@@ -256,6 +257,8 @@ class VoiceRecorder(QObject):
             self._conv_state = ConversationState.ACTIVE_LISTENING
             self._conv_last_activity = _time.monotonic()
             print("[CONV] Active window — listening for follow-up")
+            # Play ready beep during cooldown (VAD ignores audio in cooldown window)
+            self._play_ready_beep()
 
     def _check_conversation_timeout(self):
         """Check if conversation should end due to silence timeout."""
@@ -263,6 +266,21 @@ class VoiceRecorder(QObject):
             if _time.monotonic() - self._conv_last_activity > CONVERSATION_TIMEOUT:
                 self._conv_state = ConversationState.PASSIVE
                 self.conversation_ended.emit()
+
+    def _play_ready_beep(self):
+        """Play a short beep to signal the mic is ready for input.
+
+        Runs in a background thread to avoid blocking the main thread.
+        The beep is played during the TTS cooldown window, so the VAD
+        will not pick it up as speech.
+        """
+        def _beep():
+            try:
+                import winsound
+                winsound.Beep(880, 80)   # A5 note, 80 ms — short chirp
+            except Exception:
+                pass
+        threading.Thread(target=_beep, daemon=True).start()
 
     def _vad_loop(self):
         """Continuously monitor mic for voice activity."""
@@ -273,10 +291,14 @@ class VoiceRecorder(QObject):
         PREBUFFER_CHUNKS = 5  # keep last ~500ms
         prev_state = self._conv_state
         _rms_log_counter = 0  # periodic RMS logging
-        try:
+        _VAD_MAX_RETRIES = 5
+        _vad_retries = 0
+        while self._vad_running and _vad_retries < _VAD_MAX_RETRIES:
+          try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
                                 dtype=DTYPE, blocksize=chunk_size) as stream:
                 self._vad_stream = stream  # expose for manual listen reuse
+                _vad_retries = 0  # reset on successful stream open
                 while self._vad_running:
                     if self._recording:
                         prebuffer.clear()
@@ -368,13 +390,22 @@ class VoiceRecorder(QObject):
                             loud_count = 0
                     else:
                         loud_count = max(0, loud_count - 1)
-        except Exception as e:
-            print(f"[VAD] ERROR in vad_loop: {e}")
+          except Exception as e:
+            _vad_retries += 1
+            print(f"[VAD] ERROR in vad_loop (attempt {_vad_retries}/{_VAD_MAX_RETRIES}): {e}")
             import traceback
             traceback.print_exc()
-        finally:
+            if self._vad_running and _vad_retries < _VAD_MAX_RETRIES:
+                print("[VAD] Restarting stream in 2s...")
+                _time.sleep(2)
+                loud_count = 0
+                prebuffer.clear()
+          finally:
             self._vad_stream = None
-            self._vad_running = False
+
+        if _vad_retries >= _VAD_MAX_RETRIES:
+            print("[VAD] Max retries exceeded — VAD stopped")
+        self._vad_running = False
 
     # ------------------------------------------------------------------
     # Speech content analysis
@@ -525,6 +556,10 @@ class VoiceRecorder(QObject):
 
                 print(f"[STT] Accepted: {clean!r}")
                 self._conv_last_activity = _time.monotonic()
+                # Track detected language for next transcription hint
+                from core.tts import detect_language as _detect_lang
+                self._detected_lang = _detect_lang(clean)
+                print(f"[STT] Detected language: {self._detected_lang}")
                 # Analyze content for sentiment/name/wake words
                 self.analyze_transcription(clean)
                 self.transcription_ready.emit(clean)
@@ -691,6 +726,11 @@ class VoiceRecorder(QObject):
         # Resolve language preference from settings
         voice_lang = self._config.get("voice", {}).get("voice_language", "auto")
         whisper_lang = None if voice_lang == "auto" else voice_lang
+
+        # Use detected language from previous transcription as hint
+        if whisper_lang is None and self._detected_lang:
+            whisper_lang = self._detected_lang
+            print(f"[STT] Using language hint from previous: {whisper_lang}")
 
         for _ in range(len(self._groq_keys)):
             key = self._groq_keys[self._groq_key_index]
