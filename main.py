@@ -1,21 +1,24 @@
 import sys
-import io
-if sys.stderr is None:
-    sys.stderr = io.StringIO()
-if sys.stdout is None:
-    sys.stdout = io.StringIO()
+import os
+from pathlib import Path
+
+if sys.stderr is None or sys.stdout is None:
+    _log_dir = Path(os.environ.get('APPDATA', str(Path.home()))) / 'LittleFish'
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:
+        sys.stdout = open(_log_dir / 'stdout.log', 'a', encoding='utf-8', buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(_log_dir / 'stderr.log', 'a', encoding='utf-8', buffering=1)
 
 """
 Little Fish — a living desktop companion.
 Entry point: creates the application, loads config, shows the Fish.
 """
 
-import os
 import ctypes
 import traceback
 import threading
 import faulthandler
-from pathlib import Path
 
 faulthandler.enable()  # Prints traceback on segfault/abort
 
