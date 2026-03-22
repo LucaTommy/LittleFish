@@ -294,6 +294,8 @@ Examples:
 
 Return ONLY valid JSON, nothing else:
 {"intent": "intent_name", "params": {...}, "confidence": 0.0-1.0}
+
+CRITICAL: Your response must be ONLY a JSON object. No explanation. No preamble. No "I'll help you". Just the raw JSON starting with { and ending with }. If you output anything other than pure JSON, the system breaks. Start your response with { immediately.
 """
 
 
@@ -373,6 +375,11 @@ class CommandParser:
                 # Strip markdown fences if the model wraps in ```json
                 if raw.startswith("```"):
                     raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                # Extract JSON even if LLM added preamble
+                start = raw.find('{')
+                end = raw.rfind('}') + 1
+                if start >= 0 and end > start:
+                    raw = raw[start:end]
                 parsed = json.loads(raw)
                 print(f"[INTENT] {parsed.get('intent')} conf={parsed.get('confidence')} params={parsed.get('params')}")
                 return parsed

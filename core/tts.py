@@ -129,6 +129,7 @@ class TTS:
     def _worker_edge(self):
         """Edge TTS loop — uses async edge_tts wrapped in a thread event loop."""
         loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
         while True:
             text = self._queue.get()
@@ -139,9 +140,12 @@ class TTS:
                     self._speaking = True
                 lang = detect_language(text)
                 voice = self._edge_voice_it if lang == "it" else self._edge_voice_en
+                print(f"[TTS] Edge speak: lang={lang} voice={voice} text={text[:60]!r}")
                 loop.run_until_complete(self._edge_speak(text, voice))
+                print("[TTS] Edge speak finished")
             except Exception as e:
                 print(f"[TTS] Edge TTS error: {e}")
+                import traceback; traceback.print_exc()
                 # Try pyttsx3 fallback for this one utterance
                 self._pyttsx3_fallback_say(text)
             finally:
@@ -160,9 +164,20 @@ class TTS:
         tmp.close()
 
         try:
+            print(f"[TTS] Generating audio to: {tmp_path}")
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(tmp_path)
-            TTS._play_mp3(tmp_path)
+            exists = os.path.exists(tmp_path)
+            size = os.path.getsize(tmp_path) if exists else 0
+            print(f"[TTS] File exists={exists} size={size}")
+            if exists and size > 0:
+                print("[TTS] Playing audio...")
+                TTS._play_mp3(tmp_path)
+            else:
+                print("[TTS] Audio file empty or missing, skipping playback")
+        except Exception as e:
+            print(f"[TTS] _edge_speak error: {e}")
+            raise
         finally:
             try:
                 os.unlink(tmp_path)
@@ -181,9 +196,12 @@ class TTS:
                 ret = mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, 0)
                 if ret != 0:
                     raise RuntimeError(f"MCI open failed: {ret}")
+                print(f"[TTS] MCI playing: {path}")
                 mci(f'play {alias} wait', None, 0, 0)
                 mci(f'close {alias}', None, 0, 0)
-        except Exception:
+                print("[TTS] MCI playback done")
+        except Exception as e:
+            print(f"[TTS] MCI failed: {e}, trying ffplay fallback")
             # ffplay fallback
             try:
                 subprocess.run(
@@ -191,8 +209,8 @@ class TTS:
                     timeout=60,
                     creationflags=0x08000000,
                 )
-            except Exception:
-                pass
+            except Exception as e2:
+                print(f"[TTS] ffplay fallback also failed: {e2}")
 
     # ------------------------------------------------------------------
     # pyttsx3 fallback
