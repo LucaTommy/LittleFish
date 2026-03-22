@@ -47,6 +47,7 @@ class TTS:
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._speaking = False
         self._lock = threading.Lock()
+        self._last_text = ""  # last text queued for speaking (echo detection)
 
         voice_cfg = config.get("voice", {})
         self._provider = voice_cfg.get("tts_provider", "edge")  # "edge", "elevenlabs", or "pyttsx3"
@@ -63,6 +64,8 @@ class TTS:
 
     @property
     def is_speaking(self) -> bool:
+        if self._speaking and not self._thread.is_alive():
+            self._speaking = False
         return self._speaking
 
     def set_voice(self, lang: str, voice_name: str):
@@ -72,12 +75,17 @@ class TTS:
         else:
             self._edge_voice_en = voice_name
 
+    @property
+    def last_text(self) -> str:
+        return self._last_text
+
     def say(self, text: str):
         """Queue text to be spoken. Non-blocking."""
         if self._enabled and text:
             # Set speaking immediately so mouth sync starts right away
             with self._lock:
                 self._speaking = True
+            self._last_text = text
             self._queue.put(text)
 
     def stop(self):

@@ -2179,6 +2179,15 @@ class LauncherApp:
 # ---------------------------------------------------------------------------
 
 def main():
+    # Single-instance guard — prevent duplicate launcher processes
+    import ctypes
+    _kernel32 = ctypes.windll.kernel32
+    _mutex = _kernel32.CreateMutexW(None, True, "LittleFishLauncher_SingleInstance")
+    if _kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        _kernel32.CloseHandle(_mutex)
+        sys.exit(0)
+    # _mutex intentionally leaked — must stay alive for process lifetime
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 

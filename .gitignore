@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 build/
+build2/
 dist/
 Output/
 *.spec
@@ -10,3 +11,4 @@ _apply_update.cmd
 _rollback.cmd
 secrets.json
 debug_output.txt
+*.log

@@ -13,7 +13,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
-MAX_HISTORY = 10  # keep last N messages for context
+MAX_HISTORY = 30  # keep last N messages for context
 
 # Unprompted prompt templates — keyed by relationship stage for depth gating
 UNPROMPTED_PROMPTS = {

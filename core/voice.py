@@ -29,10 +29,13 @@ CHANNELS = 1
 DTYPE = "int16"
 MAX_RECORD_SECONDS = 15
 SILENCE_THRESHOLD = 100       # RMS below this = silence
-SILENCE_DURATION = 1.0        # seconds of silence to stop recording
-VAD_THRESHOLD = 100           # RMS above this = voice activity
-VAD_CONFIRM_CHUNKS = 2        # consecutive loud chunks to confirm speech
+SILENCE_DURATION = 0.6        # seconds of silence to stop recording (was 1.0)
+VAD_THRESHOLD = 200           # RMS above this = voice activity
+VAD_CONFIRM_CHUNKS = 3        # consecutive loud chunks to confirm speech
 CONVERSATION_TIMEOUT = 10.0   # seconds of silence before leaving active mode
+TTS_COOLDOWN_BASE = 1.0       # minimum seconds after TTS ends before listening
+TTS_COOLDOWN_PER_CHAR = 0.04  # additional cooldown per character of TTS text
+TTS_COOLDOWN_MAX = 4.0        # cap on dynamic cooldown
 
 
 # Sentiment word lists for compliment/insult/name detection
@@ -61,7 +64,7 @@ MIN_AUDIO_SECS = 0.3          # skip audio shorter than this (accidental blip)
 # Known Whisper hallucination patterns (common ghost outputs on silence/noise)
 import re as _re
 _HALLUCINATION_RE = _re.compile(
-    r'^[\s.!?,;:"\'\-…]*$'         # only punctuation / whitespace / ellipsis
+    r'^[\s.!?,;:"\'\-…\u200b]*$'   # only punctuation / whitespace / ellipsis / zero-width
     r'|^.{0,2}$'                    # 1-2 chars (random junk)
     r'|[\u2E80-\u9FFF]'             # CJK characters (e.g. 謝謝)
     r'|[\u3040-\u30FF]'             # Japanese kana
@@ -73,6 +76,11 @@ _HALLUCINATION_RE = _re.compile(
     r'|please subscribe'
     r'|sottotitoli'
     r'|amara\.org'
+    r'|^\W+$'                       # only non-word characters (covers "!", "!!", etc.)
+    r'|^(you|\.)+$'                 # repeated "you" or dots
+    r'|^bye[\s.!]*$'               # lone "bye" (Whisper ghost)
+    r'|^okay[\s.!]*$'              # lone "okay" from ambient noise
+    r'|^(uh|um|ah|oh|hmm)[\s.!]*$' # filler sounds
 , _re.IGNORECASE)
 
 # Short single-word filter: if transcription is 1 word and <= 3 chars,
@@ -122,6 +130,7 @@ class VoiceRecorder(QObject):
         self._fish_name = fish_name.lower().strip() if fish_name else ""
         self._tts_ref = tts  # reference to TTS for barge-in
         self._tts_cooldown_until = 0.0  # monotonic deadline after TTS ends
+        self._last_tts_text = ""        # last text spoken by TTS (echo filter)
 
         # VAD mode
         self._vad_enabled = config.get("voice", {}).get("always_listening", False)
@@ -230,24 +239,24 @@ class VoiceRecorder(QObject):
             self._conv_last_activity = _time.monotonic()
             self.conversation_started.emit()
 
-    def on_tts_started(self):
+    def on_tts_started(self, text: str = ""):
         """Called when TTS begins playing."""
         self._conv_state = ConversationState.SPEAKING
         self._conv_last_activity = _time.monotonic()
+        if text:
+            self._last_tts_text = text.lower().strip()
 
     def on_tts_finished(self):
-        """Called when TTS finishes — return to ACTIVE_LISTENING with timeout."""
-        self._tts_cooldown_until = _time.monotonic() + 0.8
+        """Called when TTS finishes — return to ACTIVE_LISTENING with dynamic cooldown."""
+        # Dynamic cooldown based on how long the TTS text was
+        cooldown = min(TTS_COOLDOWN_MAX,
+                       TTS_COOLDOWN_BASE + len(self._last_tts_text) * TTS_COOLDOWN_PER_CHAR)
+        self._tts_cooldown_until = _time.monotonic() + cooldown
+        print(f"[CONV] TTS cooldown {cooldown:.1f}s (text len={len(self._last_tts_text)})")
         if self._conv_state in (ConversationState.SPEAKING, ConversationState.PROCESSING):
             self._conv_state = ConversationState.ACTIVE_LISTENING
             self._conv_last_activity = _time.monotonic()
             print("[CONV] Active window — listening for follow-up")
-            # Quick audio cue so user knows fish is listening
-            try:
-                import winsound
-                winsound.Beep(880, 80)
-            except Exception:
-                pass
 
     def _check_conversation_timeout(self):
         """Check if conversation should end due to silence timeout."""
@@ -281,8 +290,8 @@ class VoiceRecorder(QObject):
                     # Detect transition out of SPEAKING — flush mic buffer
                     cur_state = self._conv_state
                     if prev_state == ConversationState.SPEAKING and cur_state != ConversationState.SPEAKING:
-                        # Discard 300ms of stale audio (TTS bleed / echo)
-                        flush_chunks = 3  # 3 × 100ms
+                        # Discard 800ms of stale audio (TTS bleed / echo)
+                        flush_chunks = 8  # 8 × 100ms
                         for _ in range(flush_chunks):
                             stream.read(chunk_size)
                         prebuffer.clear()
@@ -424,6 +433,23 @@ class VoiceRecorder(QObject):
         if zcr < 0.04 and rms > 500:
             self.singing_detected.emit()
 
+    def _is_echo(self, text: str) -> bool:
+        """Return True if *text* looks like the mic picking up TTS output."""
+        from difflib import SequenceMatcher
+        a = text.lower().strip()
+        b = self._last_tts_text
+        if not b:
+            return False
+        # Exact or near-exact match
+        ratio = SequenceMatcher(None, a, b).ratio()
+        if ratio > 0.55:
+            print(f"[STT] Echo similarity {ratio:.2f} — tts={b!r}")
+            return True
+        # Short fragment that appears inside the TTS text
+        if len(a) < 30 and a in b:
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
@@ -491,6 +517,12 @@ class VoiceRecorder(QObject):
                         print(f"[STT] Filtered short word: {clean!r}")
                         self._manual_listen = False
                         return
+
+                # Echo filter: if transcription closely matches what TTS just said, discard
+                if self._last_tts_text and self._is_echo(clean):
+                    print(f"[STT] Filtered echo of TTS: {clean!r}")
+                    self._manual_listen = False
+                    return
 
                 print(f"[STT] Accepted: {clean!r}")
                 self._conv_last_activity = _time.monotonic()

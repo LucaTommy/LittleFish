@@ -546,7 +546,7 @@ class FishWidget(QWidget):
             self._talk_timer.start()
             # Notify voice of TTS state for conversation flow
             if self._voice.conversation_state != ConversationState.PASSIVE:
-                self._voice.on_tts_started()
+                self._voice.on_tts_started(self._tts.last_text)
         elif not self._tts.is_speaking and self._talk_timer.isActive():
             self._talk_timer.stop()
             # TTS finished — return to active listening if in conversation
@@ -1207,6 +1207,10 @@ class FishWidget(QWidget):
         if result is None:
             self._chat.send(clean_text)
             self.emotions.spike("curious", 0.15)
+            # Show typing indicator in chat window while AI thinks
+            if self._chat_window is not None:
+                self._chat_window._typing.start()
+                self._chat_window._scroll_to_bottom()
             return
 
         try:

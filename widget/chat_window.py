@@ -135,12 +135,19 @@ class MessageBubble(QWidget):
 
 
 class TypingIndicator(QLabel):
-    """Animated '...' typing indicator."""
+    """Animated thinking indicator with bubble dots."""
+
+    _FRAMES = [
+        "\U0001F41F  \U0001F4AD \u2022",
+        "\U0001F41F  \U0001F4AD \u2022\u2022",
+        "\U0001F41F  \U0001F4AD \u2022\u2022\u2022",
+        "\U0001F41F  \U0001F4AD \u2022\u2022",
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFont(QFont("Segoe UI", 11))
-        self._dots = 0
+        self._frame = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
         self.setStyleSheet("""
@@ -152,22 +159,22 @@ class TypingIndicator(QLabel):
                 margin: 2px 60px 2px 4px;
             }
         """)
-        self.setText("\U0001F41F  ...")
+        self.setText(self._FRAMES[0])
         self.hide()
 
     def start(self):
-        self._dots = 0
+        self._frame = 0
+        self.setText(self._FRAMES[0])
         self.show()
-        self._timer.start(400)
+        self._timer.start(350)
 
     def stop(self):
         self._timer.stop()
         self.hide()
 
     def _animate(self):
-        self._dots = (self._dots + 1) % 4
-        dots = "." * (self._dots + 1)
-        self.setText(f"\U0001F41F  {dots}")
+        self._frame = (self._frame + 1) % len(self._FRAMES)
+        self.setText(self._FRAMES[self._frame])
 
 
 class SystemBubble(QLabel):
@@ -422,19 +429,26 @@ class ChatWindow(QDialog):
             if sleepy_val > 0.5:
                 self._add_system_bubble("* wakes up *")
 
-        # Try command parser first (so commands work in chat too)
-        # Skip conversational patterns — those should go to the AI in chat
+        # Try fast regex commands only (no AI classifier — the chat
+        # backend handles everything else, avoids a redundant Groq call).
+        import re as _re
         _CHAT_PASSTHROUGH = {"greeting", "status", "confirm_yes", "pin"}
-        result = self._fish._cmd_parser.parse(text, from_chat=True)
+        clean = text.strip().lower()
+        result = None
+        # Check custom name patterns (wake words etc.)
+        for pattern, handler in self._fish._cmd_parser._extra_patterns:
+            m = _re.search(pattern, clean, _re.IGNORECASE)
+            if m:
+                result = handler(m)
+                break
+        if result is None:
+            result = self._fish._cmd_parser._fast_parse(clean)
         if result is not None and result.action not in _CHAT_PASSTHROUGH:
-            # Persist user message to AI history so follow-up conversation has context
             self._persist_to_history("user", text)
-            # Delegate to FishWidget — _execute_command uses _say() which
-            # already syncs the response back to this chat window.
             self._fish._execute_command(result)
             return
 
-        # No command matched (or conversational) — send to AI chat
+        # No command matched — send to AI chat
         self._chat.send(text)
         self._waiting_for_reply = True
         self._typing.start()
