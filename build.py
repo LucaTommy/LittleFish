@@ -38,10 +38,13 @@ def clean_dist():
     """Remove old build artifacts from dist/, keeping only what we're about to produce."""
     if DIST.exists():
         for item in DIST.iterdir():
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                item.unlink(missing_ok=True)
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+            except PermissionError:
+                print(f"  Skipped locked file: {item.name}")
         print("Cleaned dist/")
     DIST.mkdir(exist_ok=True)
 

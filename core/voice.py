@@ -78,7 +78,6 @@ _HALLUCINATION_RE = _re.compile(
     r'|amara\.org'
     r'|^\W+$'                       # only non-word characters (covers "!", "!!", etc.)
     r'|^(you|\.)+$'                 # repeated "you" or dots
-    r'|^bye[\s.!]*$'               # lone "bye" (Whisper ghost)
     r'|^okay[\s.!]*$'              # lone "okay" from ambient noise
     r'|^(uh|um|ah|oh|hmm)[\s.!]*$' # filler sounds
 , _re.IGNORECASE)

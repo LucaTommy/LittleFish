@@ -69,6 +69,16 @@ _FAST_PATTERNS = [
     (r"(?:prev(?:ious)?(?:\s+(?:track|song))?|go\s+back(?:\s+(?:a\s+)?(?:track|song))?|canzone\s+precedente|indietro)",
      lambda m: _media_key("prev")),
 
+    # Greetings & farewells — fast path avoids Groq round-trip
+    (r"^(?:hi|hello|hey|ciao|buongiorno|buonasera)(?:[\s!.,]*)?$",
+     lambda m: CommandResult("greeting", "hello", "Hey there!")),
+    (r"^(?:good\s*morning|buongiorno)[\s!.,]*$",
+     lambda m: CommandResult("greeting", "morning", "Good morning! Ready for today?")),
+    (r"^(?:good\s*night|buonanotte)[\s!.,]*$",
+     lambda m: CommandResult("greeting", "night", "Good night! Sleep well.")),
+    (r"^(?:goodbye|good\s*bye|bye|bye\s*bye|ciao\s*ciao|addio|arrivederci)[\s!.,]*$",
+     lambda m: CommandResult("greeting", "bye", "See you later!")),
+
     # "yes" confirmation for pending actions
     (r"^yes$",
      lambda m: CommandResult("confirm_yes", "", "Okay!")),

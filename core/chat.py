@@ -208,12 +208,35 @@ class FishChat(QObject):
         self._chat_queue.put(("user", user_text))
 
     def _chat_worker(self):
-        """Single daemon loop — serialises all chat requests."""
+        """Single daemon loop — serialises all chat requests.
+
+        When multiple user messages arrive in quick succession (common during
+        voice conversations), batch them into one AI call so the user gets a
+        single coherent response instead of waiting for N sequential calls.
+        """
+        import time as _time
         while True:
             kind, text = self._chat_queue.get()
             try:
                 if kind == "user":
-                    self._generate(text)
+                    # Batch: wait briefly to collect any rapid follow-ups
+                    _time.sleep(0.15)
+                    texts = [text]
+                    while not self._chat_queue.empty():
+                        try:
+                            k2, t2 = self._chat_queue.get_nowait()
+                            if k2 == "user":
+                                texts.append(t2)
+                            else:
+                                # Put non-user items back
+                                self._chat_queue.put((k2, t2))
+                                break
+                        except Exception:
+                            break
+                    combined = " ".join(texts) if len(texts) > 1 else texts[0]
+                    if len(texts) > 1:
+                        print(f"[CHAT] Batched {len(texts)} rapid messages into one")
+                    self._generate(combined)
                 elif kind == "unprompted":
                     self._generate_unprompted(text)
             except Exception:

@@ -1176,12 +1176,7 @@ class FishWidget(QWidget):
         self._chat_window._add_user_message(clean_text)
 
         # Enqueue for the single parse worker thread.
-        # Drain any stale items so only the latest transcription is processed.
-        while not self._parse_queue.empty():
-            try:
-                self._parse_queue.get_nowait()
-            except Exception:
-                break
+        # Don't drain — every voice message should be processed.
         self._parse_queue.put(clean_text)
 
     def _parse_worker_loop(self):
@@ -1200,6 +1195,28 @@ class FishWidget(QWidget):
                 continue
             # Signal delivers to main thread via QueuedConnection (cross-thread)
             self._parse_result_ready.emit(result, clean_text)
+
+            # After processing, check if messages piled up while we were
+            # blocked on Groq classify.  Send them straight to chat instead
+            # of running another slow classify — the user is in conversation.
+            while not self._parse_queue.empty():
+                try:
+                    extra = self._parse_queue.get_nowait()
+                except Exception:
+                    break
+                if extra is None:
+                    return
+                # Only try fast regex (instant), skip Groq classify
+                fast = self._cmd_parser._fast_parse(extra.strip().lower())
+                # Also check custom name patterns
+                if fast is None:
+                    import re as _re
+                    for pattern, handler in self._cmd_parser._extra_patterns:
+                        m = _re.search(pattern, extra.strip().lower(), _re.IGNORECASE)
+                        if m:
+                            fast = handler(m)
+                            break
+                self._parse_result_ready.emit(fast, extra)
 
     def _handle_parse_result(self, result, clean_text: str):
         """Process parse result on the main thread."""
