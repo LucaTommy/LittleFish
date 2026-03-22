@@ -31,6 +31,10 @@ class _TeeWriter:
             self._log.flush()
         except Exception:
             pass
+    def fileno(self):
+        if self._original is not None:
+            return self._original.fileno()
+        return self._log.fileno()
 
 sys.stdout = _TeeWriter(sys.stdout, _log_dir / 'debug.log')
 sys.stderr = _TeeWriter(sys.stderr, _log_dir / 'debug_err.log')
