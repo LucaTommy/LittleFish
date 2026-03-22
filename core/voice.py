@@ -31,11 +31,11 @@ MAX_RECORD_SECONDS = 15
 SILENCE_THRESHOLD = 100       # RMS below this = silence
 SILENCE_DURATION = 0.6        # seconds of silence to stop recording (was 1.0)
 VAD_THRESHOLD = 200           # RMS above this = voice activity
-VAD_CONFIRM_CHUNKS = 3        # consecutive loud chunks to confirm speech
+VAD_CONFIRM_CHUNKS = 2        # consecutive loud chunks to confirm speech
 CONVERSATION_TIMEOUT = 10.0   # seconds of silence before leaving active mode
-TTS_COOLDOWN_BASE = 1.0       # minimum seconds after TTS ends before listening
-TTS_COOLDOWN_PER_CHAR = 0.04  # additional cooldown per character of TTS text
-TTS_COOLDOWN_MAX = 4.0        # cap on dynamic cooldown
+TTS_COOLDOWN_BASE = 0.3       # minimum seconds after TTS ends before listening
+TTS_COOLDOWN_PER_CHAR = 0.008 # additional cooldown per character of TTS text
+TTS_COOLDOWN_MAX = 1.0        # cap on dynamic cooldown
 
 
 # Sentiment word lists for compliment/insult/name detection

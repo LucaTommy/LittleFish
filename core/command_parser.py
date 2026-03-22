@@ -57,6 +57,22 @@ _FAST_PATTERNS = [
     (r"(?:alza|abbassa|metti)\s+(?:il\s+)?(?:volume|vol)\s+(?:a\s+)?(\d+)",
      lambda m: _set_volume_pct(int(m.group(1)))),
 
+    # Volume up/down
+    (r"(?:volume|vol)\s+(up|down)",
+     lambda m: _volume(m.group(1))),
+    (r"(?:turn\s+(?:the\s+)?volume\s+)(up|down)",
+     lambda m: _volume(m.group(1))),
+    (r"(?:alza|su)\s+(?:il\s+)?volume",
+     lambda m: _volume("up")),
+    (r"(?:abbassa|giù)\s+(?:il\s+)?volume",
+     lambda m: _volume("down")),
+
+    # Mute/unmute
+    (r"\b(?:mute|silenzia)\b",
+     lambda m: _toggle_mute("mute")),
+    (r"\b(?:unmute)\b",
+     lambda m: _toggle_mute("unmute")),
+
     # Media keys (bare words, speed-critical)
     (r"^(?:play|pause|play\s*/?\s*pause)$",
      lambda m: _media_key("play_pause")),
@@ -68,6 +84,102 @@ _FAST_PATTERNS = [
      lambda m: _media_key("next")),
     (r"(?:prev(?:ious)?(?:\s+(?:track|song))?|go\s+back(?:\s+(?:a\s+)?(?:track|song))?|canzone\s+precedente|indietro)",
      lambda m: _media_key("prev")),
+
+    # Show desktop / minimize all
+    (r"(?:show\s+(?:the\s+)?desktop|minimize\s+all|mostra\s+(?:il\s+)?desktop|minimizza\s+tutto)",
+     lambda m: _show_desktop()),
+
+    # Lock screen
+    (r"(?:lock\s+(?:the\s+)?(?:screen|computer|pc)|blocca\s+(?:lo\s+)?schermo)",
+     lambda m: _lock_screen()),
+
+    # Screenshot
+    (r"(?:take\s+a?\s*screenshot|screenshot|cattura\s+(?:lo\s+)?schermo|fai\s+(?:uno\s+)?screenshot)",
+     lambda m: _take_screenshot()),
+
+    # Brightness
+    (r"(?:brightness|luminosità)\s+(up|down|su|giù)",
+     lambda m: _brightness("up" if m.group(1) in ("up", "su") else "down")),
+
+    # Time and date
+    (r"(?:what\s+(?:time|day)\s+is\s+it|tell\s+(?:me\s+)?the\s+time|che\s+ora?\s+(?:è|e'?)|quanto\s+(?:è|e')?\s+tardi)",
+     lambda m: _get_time()),
+    (r"(?:what'?s?\s+the\s+date|what\s+date\s+is\s+it|che\s+giorno\s+(?:è|e'?))",
+     lambda m: CommandResult("tell_date", "", "")),
+
+    # System status / what's my IP
+    (r"(?:what'?s?\s+my\s+ip|my\s+ip\s+address|qual\s+(?:è|e')?\s+il\s+mio\s+ip|il\s+mio\s+ip)",
+     lambda m: CommandResult("whats_my_ip", "", "")),
+    (r"(?:system\s+status|cpu|ram|battery|batteria)",
+     lambda m: CommandResult("system_status", "", "")),
+    (r"(?:disk\s+space|spazio\s+(?:su\s+)?disco)",
+     lambda m: CommandResult("disk_space", "", "")),
+
+    # Empty recycle bin
+    (r"(?:empty\s+(?:the\s+)?(?:recycle\s+bin|trash)|svuota\s+(?:il\s+)?cestino)",
+     lambda m: _empty_recycle_bin()),
+
+    # Task manager / calculator (standalone, matched before generic "open")
+    (r"(?:open\s+)?(?:task\s+manager|gestione\s+attivit[àa])",
+     lambda m: CommandResult("open_task_manager", "", "")),
+    (r"(?:open\s+)?(?:calculator|calcolatrice)",
+     lambda m: CommandResult("open_calculator", "", "")),
+
+    # Search YouTube / Google (before generic "search" or "play" catch)
+    (r"(?:search|play|put)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)",
+     lambda m: _open_youtube(m.group(1).strip())),
+    (r"(?:youtube|metti\s+(?:su\s+)?youtube)\s+(.+)",
+     lambda m: _open_youtube(m.group(1).strip())),
+    (r"(?:search|google|cerca)\s+(?:on\s+google\s+)?(?:for\s+)?(.+)",
+     lambda m: _google_search(m.group(1).strip())),
+
+    # Games
+    (r"(?:play|let'?s?\s+play|gioca(?:re)?(?:\s+a)?)\s+(.+)",
+     lambda m: CommandResult("play_game", m.group(1).strip(), "")),
+    (r"(?:games?|giochi)\s*(?:menu)?",
+     lambda m: CommandResult("game_picker", "", "")),
+
+    # Fish companion commands (before generic "go to"/"switch to"/"open")
+    (r"(?:surprise\s+me|fammi\s+una\s+sorpresa|fai\s+qualcosa)",
+     lambda m: CommandResult("surprise_me", "", "")),
+    (r"(?:come\s+here|vieni\s+qui)",
+     lambda m: CommandResult("come_here", "", "")),
+    (r"(?:go\s+away|vattene|vai\s+via)",
+     lambda m: CommandResult("go_away", "", "")),
+    (r"(?:dance|balla)",
+     lambda m: CommandResult("dance", "", "")),
+    (r"(?:go\s+to\s+sleep|vai\s+a\s+dormire|dormi)",
+     lambda m: CommandResult("go_to_sleep", "", "")),
+    (r"(?:wake\s+up|svegliati|sveglia)",
+     lambda m: CommandResult("wake_up", "", "")),
+    (r"(?:tell\s+(?:me\s+)?(?:a\s+)?joke|raccontami\s+una\s+barzelletta|dimmi\s+una\s+barzelletta)",
+     lambda m: CommandResult("joke", "", "")),
+    (r"(?:tell\s+(?:me\s+)?(?:a\s+)?fact|dimmi\s+(?:qualcosa\s+di\s+)?interessante|fun\s+fact)",
+     lambda m: CommandResult("tell_fact", "", "")),
+    (r"(?:how\s+are\s+you|come\s+stai|come\s+va)",
+     lambda m: CommandResult("how_are_you", "", "")),
+    (r"(?:compliment|give\s+(?:me\s+)?(?:a\s+)?compliment|fammi\s+un\s+complimento)",
+     lambda m: CommandResult("give_compliment", "", "")),
+    (r"(?:what\s+(?:have\s+you\s+)?learn(?:ed)?\s+about\s+me|cosa\s+hai\s+imparato\s+(?:su\s+)?(?:di\s+)?me)",
+     lambda m: CommandResult("what_learned_about_me", "", "")),
+    (r"(?:look\s+at\s+(?:the\s+)?(?:my\s+)?screen|review\s+(?:the\s+)?screen|guarda\s+(?:lo\s+)?schermo|rate\s+my\s+screen)",
+     lambda m: CommandResult("rate_my_screen", "", "")),
+    (r"(?:hobby|play\s+(?:with\s+)?(?:your\s+)?hobby|fai\s+(?:il\s+)?(?:tuo\s+)?hobby)",
+     lambda m: CommandResult("play_hobby", "random", "")),
+
+    # News / weather
+    (r"(?:news|notizie|headlines)\b",
+     lambda m: CommandResult("news", "", "")),
+    (r"(?:weather|che\s+tempo\s+fa)\s*(?:in|a|at)?\s*(.+)?",
+     lambda m: CommandResult("weather", (m.group(1) or "").strip(), "")),
+
+    # Pomodoro (before generic "start")
+    (r"(?:start\s+)?pomodoro|(?:inizia\s+(?:un\s+)?)?pomodoro",
+     lambda m: CommandResult("start_pomodoro", "", "")),
+
+    # Session / uptime
+    (r"(?:how\s+long\s+(?:have\s+i\s+been\s+)?working|da\s+quanto\s+(?:sto\s+)?lavor)",
+     lambda m: CommandResult("how_long_working", "", "")),
 
     # Greetings & farewells — fast path avoids Groq round-trip
     (r"^(?:hi|hello|hey|ciao|buongiorno|buonasera)(?:[\s!.,]*)?$",
@@ -88,7 +200,59 @@ _FAST_PATTERNS = [
      lambda m: CommandResult("list_timers", "", "")),
     (r"(?:cancel|stop|clear)\s+(?:(?:the\s+)?(.+?)\s+)?timer",
      lambda m: CommandResult("cancel_timer", (m.group(1) or "").strip(), "")),
+
+    # --- Generic catch-all patterns (MUST be last) ---
+
+    # Close app
+    (r"(?:close|quit|chiudi|kill)\s+(.+)",
+     lambda m: _close_app(m.group(1).strip())),
+
+    # Switch to app (after "go to sleep", "go away")
+    (r"(?:switch\s+to|go\s+to|passa\s+a|vai\s+su)\s+(.+)",
+     lambda m: _switch_to_app(m.group(1).strip())),
+
+    # Open app / launch app (LAST — catches everything else)
+    (r"(?:open|launch|start|run|apri|avvia)\s+(.+)",
+     lambda m: _fast_open(m.group(1).strip())),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Fast-open dispatcher for "open X" commands
+# ---------------------------------------------------------------------------
+
+_WEBSITE_KEYWORDS = frozenset({
+    "youtube", "google", "reddit", "github", "twitter", "instagram",
+    "wikipedia", "stackoverflow", "stack overflow", "twitch", "spotify",
+    "netflix", "discord", "facebook", "linkedin", "amazon", "ebay",
+    "whatsapp", "telegram", "tiktok", "pinterest",
+})
+
+_FOLDER_KEYWORDS = frozenset({
+    "downloads", "download", "desktop", "documents", "document",
+    "documenti", "scrivania", "pictures", "music", "videos",
+})
+
+
+def _fast_open(target: str) -> CommandResult:
+    """Route 'open X' to the right handler: website, folder, or app."""
+    lower = target.lower().strip().rstrip(".")
+    # Check well-known websites first
+    for site in _WEBSITE_KEYWORDS:
+        if site in lower:
+            return _open_website(site)
+    # Check folder names
+    for folder in _FOLDER_KEYWORDS:
+        if folder in lower:
+            return _open_folder(folder)
+    # File explorer
+    if lower in ("file explorer", "explorer", "files", "esplora file", "esplora risorse"):
+        return _open_file_explorer()
+    # Settings
+    if lower in ("settings", "impostazioni"):
+        return CommandResult("open_settings", "", "Opening settings!")
+    # Fall through to app open
+    return _open_app(lower)
 
 
 # ---------------------------------------------------------------------------
