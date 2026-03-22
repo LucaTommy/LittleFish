@@ -12,8 +12,8 @@ import random
 import math
 from dataclasses import dataclass, field
 
-from PyQt6.QtCore import Qt, QPoint, QRect, QRectF
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPainterPath
+from PyQt6.QtCore import Qt, QPoint, QRect
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from PyQt6.QtWidgets import QApplication
 
 from games.game_manager import DesktopGame, GameState

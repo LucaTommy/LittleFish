@@ -15,7 +15,6 @@ emotion, time of day, weather, and season. The fish performs them
 because he wants to, not because he was told to.
 """
 
-import random
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
@@ -680,30 +679,3 @@ def _build_library() -> dict[str, AnimSequence]:
 # Singleton library instance
 # -----------------------------------------------------------------------
 ANIMATION_LIBRARY: dict[str, AnimSequence] = _build_library()
-
-
-def get_animations_by_category(category: str) -> list[AnimSequence]:
-    """Get all animations in a category."""
-    return [a for a in ANIMATION_LIBRARY.values() if a.category == category]
-
-
-def get_available_animations(category: str | None = None,
-                             now: float = 0.0) -> list[AnimSequence]:
-    """Get animations that are off cooldown, optionally filtered by category."""
-    results = []
-    for a in ANIMATION_LIBRARY.values():
-        if category and a.category != category:
-            continue
-        if now - a.last_played < a.cooldown:
-            continue
-        results.append(a)
-    return results
-
-
-def pick_animation(category: str | None = None,
-                   now: float = 0.0) -> AnimSequence | None:
-    """Pick a random available animation, optionally from a specific category."""
-    available = get_available_animations(category, now)
-    if not available:
-        return None
-    return random.choice(available)

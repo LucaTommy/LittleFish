@@ -18,11 +18,10 @@
     "size": 55,
     "opacity": 1.0,
     "position": [
-      865,
-      125
+      355,
+      513
     ],
     "always_on_top": true,
-    "screen": 0,
     "body_color": "#7EC8E3",
     "eye_style": "default",
     "mouth_style": "default",
@@ -40,10 +39,15 @@
     "always_listening": true,
     "tts_enabled": true,
     "tts_voice": "default",
-    "whisper_mode": "groq"
+    "whisper_mode": "groq",
+    "voice_language": "auto",
+    "tts_provider": "edge",
+    "edge_voice_en": "en-US-AriaNeural",
+    "edge_voice_it": "it-IT-ElsaNeural",
+    "elevenlabs_key": "",
+    "elevenlabs_voice": "Rachel"
   },
   "groq_keys": [],
-  "theme": "default",
   "quick_launches": {
     "setup": [
       {

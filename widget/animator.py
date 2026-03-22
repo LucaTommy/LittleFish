@@ -26,11 +26,6 @@ def ease_out_cubic(t: float) -> float:
 def ease_in_cubic(t: float) -> float:
     return t ** 3
 
-def ease_out_elastic(t: float) -> float:
-    if t == 0 or t == 1:
-        return t
-    return math.pow(2, -10 * t) * math.sin((t * 10 - 0.75) * (2 * math.pi / 3)) + 1
-
 
 # ---------------------------------------------------------------------------
 # Blink state

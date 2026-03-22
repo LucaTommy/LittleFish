@@ -5,14 +5,33 @@ Entry point: creates the application, loads config, shows the Fish.
 
 import sys
 import ctypes
+import traceback
+import threading
+import faulthandler
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt
 
+faulthandler.enable()  # Prints traceback on segfault/abort
+
 from widget.fish_widget import FishWidget
 
 ICO_PATH = Path(__file__).parent / "littlefish.ico"
+
+
+# Global exception handlers — prevent silent crashes
+def _global_except_hook(exc_type, exc_value, exc_tb):
+    print(f"[UNHANDLED] {exc_type.__name__}: {exc_value}")
+    traceback.print_exception(exc_type, exc_value, exc_tb)
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+def _thread_except_hook(args):
+    print(f"[THREAD CRASH] {args.exc_type.__name__}: {args.exc_value} in {args.thread}")
+    traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+sys.excepthook = _global_except_hook
+threading.excepthook = _thread_except_hook
 
 
 def _already_running() -> bool:

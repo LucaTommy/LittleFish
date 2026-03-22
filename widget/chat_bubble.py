@@ -4,7 +4,7 @@ A frameless, transparent popup that appears above the fish with a pixelated look
 Text renders in a pixel font style, auto-wraps, and fades out after a delay.
 """
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
 from PyQt6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPen
 from PyQt6.QtWidgets import QWidget
 

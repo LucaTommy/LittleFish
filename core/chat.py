@@ -7,6 +7,7 @@ v2: Dynamic system prompt built from character layer, relationship, profile, and
 """
 
 import random
+import queue
 import threading
 from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -70,6 +71,14 @@ class FishChat(QObject):
         # Load persistent chat history
         from core.intelligence import load_chat_history
         self._history: list[dict] = load_chat_history()
+        self._history_lock = threading.Lock()
+
+        # Single worker thread for all chat requests (C3+C4 fix)
+        self._chat_queue: queue.Queue = queue.Queue()
+        self._chat_thread = threading.Thread(
+            target=self._chat_worker, daemon=True
+        )
+        self._chat_thread.start()
 
     def set_context_getter(self, getter):
         """Set a callable that returns live context dict with keys:
@@ -196,10 +205,19 @@ class FishChat(QObject):
         if not self._groq_keys:
             self.response_ready.emit("I can't chat without API keys!")
             return
-        thread = threading.Thread(
-            target=self._generate, args=(user_text,), daemon=True
-        )
-        thread.start()
+        self._chat_queue.put(("user", user_text))
+
+    def _chat_worker(self):
+        """Single daemon loop — serialises all chat requests."""
+        while True:
+            kind, text = self._chat_queue.get()
+            try:
+                if kind == "user":
+                    self._generate(text)
+                elif kind == "unprompted":
+                    self._generate_unprompted(text)
+            except Exception:
+                pass
 
     def _generate(self, user_text: str):
         try:
@@ -209,12 +227,14 @@ class FishChat(QObject):
             return
 
         # Build messages
-        self._history.append({"role": "user", "content": user_text})
-        if len(self._history) > MAX_HISTORY:
-            self._history = self._history[-MAX_HISTORY:]
+        with self._history_lock:
+            self._history.append({"role": "user", "content": user_text})
+            if len(self._history) > MAX_HISTORY:
+                self._history = self._history[-MAX_HISTORY:]
+            history_snapshot = list(self._history)
 
         system = self._build_system_prompt()
-        messages = [{"role": "system", "content": system}] + self._history
+        messages = [{"role": "system", "content": system}] + history_snapshot
 
         last_error = None
         for _ in range(len(self._groq_keys)):
@@ -230,10 +250,12 @@ class FishChat(QObject):
                 reply = completion.choices[0].message.content.strip()
                 from core.personality import apply_verbal_tic
                 reply = apply_verbal_tic(reply)
-                self._history.append({"role": "assistant", "content": reply})
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": reply})
+                    history_to_save = list(self._history)
                 # Persist chat history
                 from core.intelligence import save_chat_history
-                save_chat_history(self._history)
+                save_chat_history(history_to_save)
                 self.response_ready.emit(reply)
                 return
             except Exception as e:
@@ -257,10 +279,7 @@ class FishChat(QObject):
         prompts = UNPROMPTED_PROMPTS.get(rel_stage, UNPROMPTED_PROMPTS["stranger"])
         prompt = random.choice(prompts)
 
-        thread = threading.Thread(
-            target=self._generate_unprompted, args=(prompt,), daemon=True
-        )
-        thread.start()
+        self._chat_queue.put(("unprompted", prompt))
 
     def _generate_unprompted(self, internal_prompt: str):
         try:
@@ -270,9 +289,11 @@ class FishChat(QObject):
 
         system = self._build_system_prompt() + "\n" + internal_prompt
         # Include recent chat history so unprompted speech is contextual
+        with self._history_lock:
+            history_tail = list(self._history[-4:]) if self._history else []
         messages = [{"role": "system", "content": system}]
-        if self._history:
-            messages.extend(self._history[-4:])  # last 2 exchanges for context
+        if history_tail:
+            messages.extend(history_tail)
 
         for _ in range(len(self._groq_keys)):
             key = self._groq_keys[self._key_index]
@@ -287,9 +308,11 @@ class FishChat(QObject):
                 reply = completion.choices[0].message.content.strip()
                 from core.personality import apply_verbal_tic
                 reply = apply_verbal_tic(reply)
-                self._history.append({"role": "assistant", "content": reply})
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": reply})
+                    history_to_save = list(self._history)
                 from core.intelligence import save_chat_history
-                save_chat_history(self._history)
+                save_chat_history(history_to_save)
                 self.response_ready.emit(reply)
                 return
             except Exception:

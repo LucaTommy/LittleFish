@@ -38,6 +38,8 @@ def detect_language(text: str) -> str:
 
 
 class TTS:
+    _mci_lock = threading.Lock()  # serialize all MCI calls across threads
+
     def __init__(self, config: dict):
         self._config = config
         self._enabled = (config.get("voice", {}).get("tts_enabled", True)
@@ -86,9 +88,10 @@ class TTS:
         """Immediately halt current audio playback (barge-in support)."""
         import ctypes
         try:
-            mci = ctypes.windll.winmm.mciSendStringW
-            mci('stop lf_tts', None, 0, 0)
-            mci('close lf_tts', None, 0, 0)
+            with TTS._mci_lock:
+                mci = ctypes.windll.winmm.mciSendStringW
+                mci('stop lf_tts', None, 0, 0)
+                mci('close lf_tts', None, 0, 0)
         except Exception:
             pass
         with self._lock:
@@ -171,15 +174,15 @@ class TTS:
         """Play an MP3 file synchronously using Windows MCI (instant, no process spawn)."""
         import ctypes
         try:
-            mci = ctypes.windll.winmm.mciSendStringW
-            # Use the file path as part of the alias to avoid collisions
-            alias = "lf_tts"
-            mci(f'close {alias}', None, 0, 0)  # clean up any previous
-            ret = mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, 0)
-            if ret != 0:
-                raise RuntimeError(f"MCI open failed: {ret}")
-            mci(f'play {alias} wait', None, 0, 0)
-            mci(f'close {alias}', None, 0, 0)
+            with TTS._mci_lock:
+                mci = ctypes.windll.winmm.mciSendStringW
+                alias = "lf_tts"
+                mci(f'close {alias}', None, 0, 0)  # clean up any previous
+                ret = mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, 0)
+                if ret != 0:
+                    raise RuntimeError(f"MCI open failed: {ret}")
+                mci(f'play {alias} wait', None, 0, 0)
+                mci(f'close {alias}', None, 0, 0)
         except Exception:
             # ffplay fallback
             try:

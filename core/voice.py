@@ -121,6 +121,7 @@ class VoiceRecorder(QObject):
         self._groq_key_index = 0
         self._fish_name = fish_name.lower().strip() if fish_name else ""
         self._tts_ref = tts  # reference to TTS for barge-in
+        self._tts_cooldown_until = 0.0  # monotonic deadline after TTS ends
 
         # VAD mode
         self._vad_enabled = config.get("voice", {}).get("always_listening", False)
@@ -236,6 +237,7 @@ class VoiceRecorder(QObject):
 
     def on_tts_finished(self):
         """Called when TTS finishes — return to ACTIVE_LISTENING with timeout."""
+        self._tts_cooldown_until = _time.monotonic() + 0.8
         if self._conv_state in (ConversationState.SPEAKING, ConversationState.PROCESSING):
             self._conv_state = ConversationState.ACTIVE_LISTENING
             self._conv_last_activity = _time.monotonic()
@@ -289,6 +291,13 @@ class VoiceRecorder(QObject):
                     prev_state = cur_state
 
                     data, _ = stream.read(chunk_size)
+
+                    # Hard gate: discard audio while TTS is speaking + cooldown
+                    if self._tts_ref and self._tts_ref.is_speaking:
+                        continue
+                    if _time.monotonic() < self._tts_cooldown_until:
+                        continue
+
                     rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
 
                     # Log RMS every ~2 seconds so we can see what the mic reads

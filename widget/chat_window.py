@@ -5,7 +5,7 @@ Persistent conversation, command execution, and memory.
 """
 
 import time, datetime
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QKeyEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
@@ -192,14 +192,11 @@ class SystemBubble(QLabel):
 class ChatWindow(QDialog):
     """Text-based chat window for messaging Little Fish."""
 
-    _api_result_ready = pyqtSignal(str)  # emitted from background thread
-
     def __init__(self, chat_backend, fish_widget, parent=None):
         super().__init__(parent)
         self._chat = chat_backend
         self._fish = fish_widget
         self._waiting_for_reply = False
-        self._api_result_ready.connect(self._on_api_result)
 
         # Get fish name from profile
         self._fish_name = "Little Fish"
@@ -432,8 +429,9 @@ class ChatWindow(QDialog):
         if result is not None and result.action not in _CHAT_PASSTHROUGH:
             # Persist user message to AI history so follow-up conversation has context
             self._persist_to_history("user", text)
-            # Execute the command through the fish widget
-            self._execute_command(result)
+            # Delegate to FishWidget — _execute_command uses _say() which
+            # already syncs the response back to this chat window.
+            self._fish._execute_command(result)
             return
 
         # No command matched (or conversational) — send to AI chat
@@ -448,244 +446,6 @@ class ChatWindow(QDialog):
         self._fish.animator.queue_reaction(ReactionType.NOD)
         self._fish._last_interaction_time = time.monotonic()
         self._fish._behavior_engine.record_interaction()
-
-    def _execute_command(self, result):
-        """Execute a parsed command from chat input."""
-        from widget.animator import ReactionType
-
-        # Let the fish widget handle special actions
-        action = result.action
-        if action == "come_to_cursor":
-            from PyQt6.QtGui import QCursor
-            pos = QCursor.pos()
-            self._fish._walk_to(pos.x() - self._fish.width() // 2,
-                                pos.y() - self._fish.height() // 2, speed=800.0)
-        elif action == "hide":
-            self._fish.hide()
-            QTimer.singleShot(30000, self._fish._show_fish)
-        elif action == "rest_mode":
-            self._fish.emotions.values["sleepy"] = 0.8
-        elif action == "set_timer":
-            secs = int(result.target)
-            self._fish._start_timer(secs)
-        elif action == "set_reminder":
-            parts = result.target.split("|", 1)
-            secs = int(parts[0])
-            msg = parts[1] if len(parts) > 1 else "Time's up!"
-            self._fish._start_reminder(secs, msg)
-        elif action == "todo_add":
-            result.response = self._fish._todo_list.add(result.target)
-        elif action == "todo_list":
-            result.response = self._fish._todo_list.list_pending()
-        elif action == "todo_complete":
-            result.response = self._fish._todo_list.complete(result.target)
-        elif action == "todo_remove":
-            result.response = self._fish._todo_list.remove(result.target)
-        elif action == "companion_on":
-            self._fish._companion_mode = True
-        elif action == "companion_off":
-            self._fish._companion_mode = False
-        elif action == "joke":
-            from core.intelligence import get_random_joke_or_fact
-            result.response = get_random_joke_or_fact()
-        elif action == "system_status":
-            result.response = self._fish._get_system_status()
-        elif action == "top_processes":
-            result.response = self._fish._get_top_processes()
-        elif action == "session_time":
-            elapsed = time.monotonic() - self._fish._session_start
-            hours = int(elapsed // 3600)
-            mins = int((elapsed % 3600) // 60)
-            result.response = f"You've been on for {hours}h {mins}m this session."
-        elif action == "play_game":
-            self._fish._open_games()
-            result.response = "Opening games!"
-        elif action in ("weather", "forecast", "wikipedia", "news",
-                         "translate", "define", "exchange_rate",
-                         "holiday_check", "sun_times", "speed_test",
-                         "find_file"):
-            # Run API action and show response in chat
-            self._run_api_in_chat(result)
-            return
-        elif action == "read_clipboard":
-            from PyQt6.QtWidgets import QApplication
-            cb = QApplication.clipboard()
-            text_on_clip = cb.text()
-            if text_on_clip:
-                short = text_on_clip[:200] + ("..." if len(text_on_clip) > 200 else "")
-                result.response = f"Clipboard says: {short}"
-            else:
-                result.response = "Clipboard is empty."
-        elif action == "groq_prompt":
-            self._chat.send(result.target)
-            return
-        elif action == "screen_review":
-            focus = result.target if result.target else None
-            self._fish._start_screen_review(focus)
-            self._add_system_bubble("Reviewing your screen...")
-            return
-        elif action == "point_at_screen":
-            result.response = self._fish._point_at_last_mention()
-        elif action == "pomodoro":
-            self._fish._start_pomodoro()
-            result.response = "25-minute pomodoro started. Focus!"
-        elif action == "set_named_timer":
-            parts = result.target.split("|", 1)
-            secs = int(parts[0])
-            name = parts[1] if len(parts) > 1 else "timer"
-            self._fish._start_named_timer(secs, name)
-        elif action == "set_alarm":
-            self._fish._set_alarm(result.target)
-            return
-        elif action == "list_timers":
-            result.response = self._fish._list_active_timers()
-        elif action == "cancel_timer":
-            result.response = self._fish._cancel_timer(result.target)
-        elif action == "confirm_power":
-            self._fish._pending_power = result.target
-        elif action == "confirm_yes":
-            self._fish._execute_pending_power()
-        elif action == "save_clipboard":
-            import os, datetime as _dt
-            from PyQt6.QtWidgets import QApplication
-            cb = QApplication.clipboard()
-            text_on_clip = cb.text()
-            if text_on_clip:
-                desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-                fname = f"clipboard_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                path = os.path.join(desktop, fname)
-                try:
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(text_on_clip)
-                    result.response = f"Saved clipboard to {fname} on Desktop."
-                except Exception:
-                    result.response = "Couldn't save clipboard."
-                    result.success = False
-            else:
-                result.response = "Nothing on clipboard to save."
-                result.success = False
-        elif action == "status":
-            emo = self._fish.emotions.dominant_emotion()
-            result.response = f"I'm feeling {emo} right now."
-        elif action == "whats_playing":
-            title = self._fish._detect_playing_media()
-            result.response = title if title else "Can't tell what's playing."
-        elif action == "toggle_mic":
-            if result.target == "mute":
-                self._fish._voice.stop_vad()
-                result.response = "Mic muted."
-            else:
-                self._fish._voice.start_vad()
-                result.response = "Mic unmuted."
-        elif action == "vscode_time":
-            result.response = self._fish._get_vscode_time()
-        elif action == "posture_check":
-            elapsed = time.monotonic() - self._fish._last_break_time
-            hours = int(elapsed // 3600)
-            mins = int((elapsed % 3600) // 60)
-            result.response = f"You've been sitting for {hours}h {mins}m since your last break."
-        elif action == "last_break":
-            elapsed = time.monotonic() - self._fish._last_break_time
-            mins = int(elapsed // 60)
-            if mins < 2:
-                result.response = "You just took a break!"
-            else:
-                result.response = f"Your last break was {mins} minutes ago."
-        elif action == "command_count":
-            self._fish._command_count += 1
-            result.response = f"You've used {self._fish._command_count} commands this session."
-        elif action == "fish_mood":
-            result.response = self._fish._get_mood_and_reason()
-        elif action == "daily_summary":
-            result.response = self._fish._get_daily_summary()
-        elif action == "app_too_long":
-            result.response = self._fish._get_longest_running_app()
-        elif action == "media_sleep_timer":
-            mins = int(result.target) if result.target and result.target.isdigit() else 30
-            self._fish._start_media_sleep_timer(mins)
-        elif action == "high_scores":
-            result.response = self._fish._get_high_scores()
-        elif action == "game_picker":
-            self._fish._open_games()
-            result.response = "Here are the games!"
-        elif action == "briefing":
-            from core.intelligence import generate_morning_briefing
-            weather = self._fish.emotions.weather
-            mood = self._fish.emotions.dominant_emotion()
-            todo_count = self._fish._todo_list.count_pending()
-            result.response = generate_morning_briefing(weather, mood, todo_count)
-        # open_app and open_url are already executed inside the parser
-
-        if result.success:
-            self._fish.emotions.spike("happy", 0.15)
-            self._fish.animator.queue_reaction(ReactionType.BOUNCE)
-        else:
-            self._fish.emotions.spike("worried", 0.2)
-
-        if result.response:
-            self._add_fish_message(result.response)
-            self._fish._tts.say(result.response)
-            self._persist_to_history("assistant", result.response)
-        else:
-            # For actions that already executed (open_app, open_url, etc.)
-            self._add_system_bubble(f"Done!")
-
-        self._fish._last_interaction_time = time.monotonic()
-        self._fish._behavior_engine.record_interaction()
-
-    def _run_api_in_chat(self, result):
-        """Run an API command in a thread and show result in chat."""
-        import threading
-        from core import web_apis
-
-        action = result.action
-        target = result.target
-
-        def _work():
-            try:
-                if action == "weather":
-                    text = web_apis.weather(target or None)
-                elif action == "forecast":
-                    text = web_apis.forecast(target or None)
-                elif action == "wikipedia":
-                    text = web_apis.wikipedia_summary(target)
-                elif action == "news":
-                    text = web_apis.top_news()
-                elif action == "translate":
-                    parts = target.split("|", 1)
-                    lang = parts[0] if parts else "en"
-                    src = parts[1] if len(parts) > 1 else ""
-                    text = web_apis.translate_text(src, lang)
-                elif action == "define":
-                    text = web_apis.define_word(target)
-                elif action == "exchange_rate":
-                    parts = target.split("|")
-                    fr = parts[0] if parts else "USD"
-                    to = parts[1] if len(parts) > 1 else "EUR"
-                    amt = float(parts[2]) if len(parts) > 2 else 1.0
-                    text = web_apis.exchange_rate(fr, to, amt)
-                elif action == "holiday_check":
-                    text = web_apis.holiday_check(target or None)
-                elif action == "sun_times":
-                    text = web_apis.sun_times()
-                elif action == "speed_test":
-                    text = web_apis.speed_test()
-                else:
-                    text = "Not sure how to do that."
-            except Exception as e:
-                text = f"Error: {str(e)[:100]}"
-
-            # Post result back to UI thread via signal
-            self._api_result_ready.emit(text)
-
-        threading.Thread(target=_work, daemon=True).start()
-        self._add_system_bubble("Working on it...")
-
-    def _on_api_result(self, text: str):
-        """Handle API result on the main thread (connected via signal)."""
-        self._add_fish_message(text)
-        self._fish._tts.say(text)
-        self._persist_to_history("assistant", text)
 
     def _on_response(self, text: str):
         """Called when chat backend generates a response."""

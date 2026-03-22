@@ -132,7 +132,11 @@ System Control:
 - theme: switch dark/light mode. params: {"mode": "dark|light"}
 - system_status: check CPU/RAM/battery. params: {}
 - top_processes: top resource-using processes. params: {}
-- empty_trash: empty recycle bin. params: {}
+- empty_recycle_bin: empty recycle bin. params: {}
+- open_calculator: open calculator app. params: {}
+- open_task_manager: open task manager. params: {}
+- restart_wifi: restart the network adapter. params: {}
+- whats_my_ip: show current IP address. params: {}
 
 Window Management:
 - window_snap: snap window left or right. params: {"direction": "left|right"}
@@ -150,7 +154,10 @@ Time & Productivity:
 - tell_date: current date. params: {}
 - set_timer: set a timer. params: {"amount": 5, "unit": "minutes", "label": ""}
 - set_reminder: set a reminder. params: {"amount": 5, "unit": "minutes", "message": "..."}
+- remind_me: set a reminder with total seconds and message. params: {"seconds": 0, "message": "..."}
 - pomodoro: start 25-min focus session. params: {}
+- start_pomodoro: alias for pomodoro. params: {}
+- how_long_working: how long the current work session has been. params: {}
 - uptime: PC uptime. params: {}
 - countdown: days until a date. params: {"date": "..."}
 - day_of_week: what day of the week is a date. params: {"date": "..."}
@@ -181,13 +188,26 @@ Fish Companion:
 - screen_review: look at / review the screen. params: {"focus": "design|code|copy|data"}
 - point_at_screen: point at something on screen. params: {}
 - high_scores: show game scores. params: {}
+- surprise_me: trigger random hobby or animation. params: {}
+- how_are_you_feeling: ask fish his current emotional state. params: {}
+- tell_joke_italian: tell a joke in Italian. params: {}
+- try_to_sing: fish attempts to sing dramatically. params: {}
+- go_away: fish moves to far corner. params: {}
+- opinion_on_app: fish gives opinion on a specific app. params: {"app": "..."}
+- what_learned_about_me: fish shares what he's learned about the user. params: {}
+- rate_my_screen: fish reviews/rates the current screen. params: {}
+- dance: fish dances. params: {}
+- go_to_sleep: put fish to sleep. params: {}
+- wake_up: wake fish up. params: {}
+- give_compliment: fish gives user a compliment. params: {}
+- tell_fact: fish tells an interesting fact. params: {}
 
 Info & Knowledge:
 - weather: check weather. params: {"city": "..."}
 - forecast: weather forecast. params: {"city": "..."}
 - wikipedia: look up a topic. params: {"topic": "..."}
 - news: news headlines. params: {}
-- translate: translate text. params: {"text": "...", "language": "..."}
+- translate: translate text. params: {"text": "...", "to": "italian|english|..."}
 - define: define a word. params: {"word": "..."}
 - exchange_rate: currency conversion. params: {"from": "USD", "to": "EUR", "amount": "1"}
 - holiday_check: is today a holiday. params: {}
@@ -196,7 +216,7 @@ Info & Knowledge:
 - joke: tell a joke or fun fact. params: {}
 
 Clipboard:
-- clipboard_read: read what's on clipboard. params: {}
+- read_clipboard: read what's on clipboard. params: {}
 - clipboard_clear: clear clipboard. params: {}
 - clipboard_save: save clipboard to file. params: {}
 
@@ -209,6 +229,7 @@ Fun:
 - random_number: random number in range. params: {"low": 1, "high": 100}
 
 Other:
+- open_last_project: open the most recent VSCode workspace. params: {}
 - mic_toggle: mute/unmute microphone. params: {"action": "mute|unmute"}
 - quick_launch: run a saved shortcut. params: {"name": "..."}
 - speed_test: internet speed test. params: {}
@@ -243,6 +264,33 @@ Examples:
 - "quanti giorni mancano a Natale" -> countdown, date="December 25"
 - "I love swimming while listening to music" -> chat
 - "do you like playing around outside" -> chat
+- "ricordami di chiamare la mamma tra 30 minuti" -> remind_me, seconds=1800, message="chiamare la mamma"
+- "aggiungi comprare il latte alla lista" -> todo_add, item="comprare il latte"
+- "cosa ho da fare" -> todo_list
+- "inizia un pomodoro" -> start_pomodoro
+- "da quanto sto lavorando" -> how_long_working
+- "apri l'ultimo progetto" -> open_last_project
+- "traduci ciao in inglese" -> translate, text="ciao", to="english"
+- "svuota il cestino" -> empty_recycle_bin
+- "apri la calcolatrice" -> open_calculator
+- "apri il task manager" -> open_task_manager
+- "chiudi questa finestra" -> close_window
+- "qual e' il mio IP" -> whats_my_ip
+- "riavvia il wifi" -> restart_wifi
+- "fai qualcosa di divertente" -> surprise_me
+- "come ti senti" -> how_are_you_feeling
+- "raccontami una barzelletta in italiano" -> tell_joke_italian
+- "prova a cantare qualcosa" -> try_to_sing
+- "vieni qui" -> come_here
+- "vattene" -> go_away
+- "cosa pensi di discord" -> opinion_on_app, app="discord"
+- "cosa hai imparato su di me" -> what_learned_about_me
+- "guarda lo schermo" -> rate_my_screen
+- "balla" -> dance
+- "vai a dormire" -> go_to_sleep
+- "svegliati" -> wake_up
+- "dimmi qualcosa di interessante" -> tell_fact
+- "fai un complimento" -> give_compliment
 
 Return ONLY valid JSON, nothing else:
 {"intent": "intent_name", "params": {...}, "confidence": 0.0-1.0}
@@ -260,6 +308,7 @@ class CommandParser:
         self._groq_client = None
         self._groq_module = None
         self._extra_patterns = []
+        self._classify_lock = __import__('threading').Lock()  # serialize Groq calls
         if fish_name and fish_name.lower().strip() not in ("little fish", ""):
             escaped = re.escape(fish_name.strip())
             self._extra_patterns.append(
@@ -295,6 +344,16 @@ class CommandParser:
 
     def classify_intent(self, text: str) -> dict:
         """Call Groq LLM to classify user speech into an intent."""
+        with self._classify_lock:
+            try:
+                return self._classify_intent_inner(text)
+            except Exception as e:
+                import traceback
+                print(f"[INTENT CRASH] {e}")
+                print(traceback.format_exc())
+                return {"intent": "chat", "params": {}, "confidence": 0.0}
+
+    def _classify_intent_inner(self, text: str) -> dict:
         if not self._groq_client:
             return {"intent": "chat", "params": {}, "confidence": 0.0}
 
@@ -302,7 +361,7 @@ class CommandParser:
         for _ in range(len(self._groq_keys)):
             try:
                 response = self._groq_client.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
                         {"role": "user", "content": text},
@@ -314,7 +373,9 @@ class CommandParser:
                 # Strip markdown fences if the model wraps in ```json
                 if raw.startswith("```"):
                     raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                return json.loads(raw)
+                parsed = json.loads(raw)
+                print(f"[INTENT] {parsed.get('intent')} conf={parsed.get('confidence')} params={parsed.get('params')}")
+                return parsed
             except json.JSONDecodeError:
                 print(f"[INTENT] Bad JSON from LLM: {raw!r}")
                 return {"intent": "chat", "params": {}, "confidence": 0.0}
@@ -423,8 +484,8 @@ class CommandParser:
             return CommandResult("system_status", "", "")
         elif intent == "top_processes":
             return CommandResult("top_processes", "", "")
-        elif intent == "empty_trash":
-            return _empty_recycle_bin()
+        elif intent in ("empty_trash", "empty_recycle_bin"):
+            return CommandResult("empty_recycle_bin", "", "")
 
         # --- Window Management ---
         elif intent == "window_snap":
@@ -434,7 +495,7 @@ class CommandParser:
         elif intent == "window_minimize":
             return _snap_window("down")
         elif intent == "close_window":
-            return _close_current_window()
+            return CommandResult("close_window", "", "")
         elif intent == "pin_window":
             return _pin_window_on_top()
         elif intent == "switch_window":
@@ -463,7 +524,13 @@ class CommandParser:
                 int(params.get("amount", 0)),
                 params.get("unit", "minutes"),
                 params.get("message", "Time's up!"))
-        elif intent == "pomodoro":
+        elif intent == "remind_me":
+            secs = int(params.get("seconds", 0))
+            msg = params.get("message", "Time's up!")
+            label = f"{secs // 60} minutes" if secs >= 60 else f"{secs} seconds"
+            return CommandResult("set_reminder", f"{secs}|{msg}",
+                                 f"I'll remind you in {label}: {msg}")
+        elif intent in ("pomodoro", "start_pomodoro"):
             return CommandResult("pomodoro", "",
                                  "Starting a 25-minute focus session!")
         elif intent == "uptime":
@@ -472,7 +539,7 @@ class CommandParser:
             return _countdown_to(params.get("date", ""))
         elif intent == "day_of_week":
             return _day_of_week(params.get("date", ""))
-        elif intent == "session_time":
+        elif intent in ("session_time", "how_long_working"):
             return CommandResult("session_time", "", "")
         elif intent == "posture_check":
             return CommandResult("posture_check", "", "")
@@ -485,7 +552,7 @@ class CommandParser:
 
         # --- Todos ---
         elif intent == "todo_add":
-            return CommandResult("todo_add", params.get("task", ""), "")
+            return CommandResult("todo_add", params.get("item", "") or params.get("task", ""), "")
         elif intent == "todo_list":
             return CommandResult("todo_list", "", "")
         elif intent == "todo_complete":
@@ -552,9 +619,9 @@ class CommandParser:
         elif intent == "news":
             return CommandResult("news", "", "")
         elif intent == "translate":
-            lang = params.get("language", "")
             text = params.get("text", "")
-            return CommandResult("translate", f"{lang}|{text}", "")
+            lang = params.get("to", "") or params.get("language", "")
+            return CommandResult("translate", f"{text}|{lang}", "")
         elif intent == "define":
             return CommandResult("define", params.get("word", ""), "")
         elif intent == "exchange_rate":
@@ -572,7 +639,7 @@ class CommandParser:
             return CommandResult("joke", "", "")
 
         # --- Clipboard ---
-        elif intent == "clipboard_read":
+        elif intent in ("clipboard_read", "read_clipboard"):
             return CommandResult("read_clipboard", "", "")
         elif intent == "clipboard_clear":
             return _clear_clipboard()
@@ -610,6 +677,45 @@ class CommandParser:
             return CommandResult("app_too_long", "", "")
         elif intent == "vscode_time":
             return CommandResult("vscode_time", "", "")
+        elif intent == "open_last_project":
+            return CommandResult("open_last_project", "", "")
+        elif intent == "whats_my_ip":
+            return CommandResult("whats_my_ip", "", "")
+        elif intent == "restart_wifi":
+            return CommandResult("restart_wifi", "", "")
+        elif intent == "open_calculator":
+            return CommandResult("open_calculator", "", "")
+        elif intent == "open_task_manager":
+            return CommandResult("open_task_manager", "", "")
+
+        # --- New personality / fun intents ---
+        elif intent == "surprise_me":
+            return CommandResult("surprise_me", "", "")
+        elif intent == "how_are_you_feeling":
+            return CommandResult("how_are_you_feeling", "", "")
+        elif intent == "tell_joke_italian":
+            return CommandResult("tell_joke_italian", "", "")
+        elif intent == "try_to_sing":
+            return CommandResult("try_to_sing", "", "")
+        elif intent == "go_away":
+            return CommandResult("go_away", "", "")
+        elif intent == "opinion_on_app":
+            return CommandResult("opinion_on_app",
+                                 params.get("app", ""), "")
+        elif intent == "what_learned_about_me":
+            return CommandResult("what_learned_about_me", "", "")
+        elif intent == "rate_my_screen":
+            return CommandResult("rate_my_screen", "", "")
+        elif intent == "dance":
+            return CommandResult("dance", "", "")
+        elif intent == "go_to_sleep":
+            return CommandResult("go_to_sleep", "", "")
+        elif intent == "wake_up":
+            return CommandResult("wake_up", "", "")
+        elif intent == "give_compliment":
+            return CommandResult("give_compliment", "", "")
+        elif intent == "tell_fact":
+            return CommandResult("tell_fact", "", "")
 
         return None
 
@@ -979,20 +1085,9 @@ def _toggle_mute(action: str) -> CommandResult:
 # ---------------------------------------------------------------------------
 
 def _set_volume_pct(pct: int) -> CommandResult:
-    """Set system volume to exact percentage using pycaw or nircmd fallback."""
+    """Return a deferred result — actual pycaw COM runs on the main thread."""
     pct = max(0, min(100, pct))
-    try:
-        from ctypes import cast, POINTER
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        volume.SetMasterVolumeLevelScalar(pct / 100.0, None)
-        return CommandResult("volume", str(pct), f"Volume set to {pct}%.")
-    except Exception:
-        # Fallback: simulate key presses to approximate
-        return CommandResult("volume", str(pct), f"Couldn't set exact volume. Try 'volume up/down'.", success=False)
+    return CommandResult("set_volume", str(pct), f"Volume set to {pct}%.")
 
 
 def _brightness(direction: str) -> CommandResult:
@@ -1192,14 +1287,8 @@ def _open_user_folder(name: str) -> CommandResult:
 
 
 def _clear_clipboard() -> CommandResult:
-    try:
-        import ctypes
-        ctypes.windll.user32.OpenClipboard(0)
-        ctypes.windll.user32.EmptyClipboard()
-        ctypes.windll.user32.CloseClipboard()
-        return CommandResult("clipboard", "clear", "Clipboard cleared.")
-    except Exception:
-        return CommandResult("clipboard", "clear", "Couldn't clear clipboard.", success=False)
+    """Return a deferred result — actual clipboard clear runs on the main thread."""
+    return CommandResult("clear_clipboard", "", "Clipboard cleared.")
 
 
 def _create_text_file(name: Optional[str]) -> CommandResult:

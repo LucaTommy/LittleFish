@@ -9,7 +9,7 @@ import time
 import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QUrl
+from PyQt6.QtCore import Qt, QTimer, QPoint, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QIcon, QPixmap, QColor, QPen, QBrush, QPainterPath, QCursor,
 )
@@ -72,8 +72,16 @@ UNPROMPTED_PHRASES = [
 
 
 class FishWidget(QWidget):
+    # Signal for parse worker to deliver results back to the main thread
+    _parse_result_ready = pyqtSignal(object, str)  # (CommandResult|None, clean_text)
+    _parse_error = pyqtSignal()  # parse() crashed
+
     def __init__(self):
         super().__init__()
+
+        # Connect parse result signal to main-thread handler
+        self._parse_result_ready.connect(self._handle_parse_result)
+        self._parse_error.connect(lambda: self._say("Something went wrong parsing that."))
 
         # --- Load config ---
         self._config = self._load_config()
@@ -143,6 +151,12 @@ class FishWidget(QWidget):
         self._cmd_parser = CommandParser(groq_keys=groq_keys, fish_name=self._user_profile.fish_name)
         self._tts = TTS(self._config)
         self._voice._tts_ref = self._tts  # for barge-in support
+
+        # Single parse worker thread — prevents thread accumulation from rapid speech
+        import queue as _queue_mod, threading as _th_mod
+        self._parse_queue: _queue_mod.Queue = _queue_mod.Queue()
+        self._parse_thread = _th_mod.Thread(target=self._parse_worker_loop, daemon=True)
+        self._parse_thread.start()
 
         self._chat = FishChat(
             groq_keys,
@@ -1126,6 +1140,14 @@ class FishWidget(QWidget):
 
     def _on_transcription(self, text: str):
         """Called when voice recorder delivers transcribed text."""
+        try:
+            self._on_transcription_inner(text)
+        except Exception as e:
+            import traceback
+            print(f"[CRASH] _on_transcription failed: {e}")
+            print(traceback.format_exc())
+
+    def _on_transcription_inner(self, text: str):
         self._last_interaction_time = time.monotonic()
         self._behavior_engine.record_interaction()
 
@@ -1153,12 +1175,34 @@ class FishWidget(QWidget):
             self._chat_window = ChatWindow(self._chat, self)
         self._chat_window._add_user_message(clean_text)
 
-        try:
-            result = self._cmd_parser.parse(clean_text)
-        except Exception:
-            self._say("Something went wrong parsing that.")
-            return
+        # Enqueue for the single parse worker thread.
+        # Drain any stale items so only the latest transcription is processed.
+        while not self._parse_queue.empty():
+            try:
+                self._parse_queue.get_nowait()
+            except Exception:
+                break
+        self._parse_queue.put(clean_text)
 
+    def _parse_worker_loop(self):
+        """Single background thread that processes parse requests sequentially."""
+        while True:
+            clean_text = self._parse_queue.get()
+            if clean_text is None:
+                break
+            try:
+                result = self._cmd_parser.parse(clean_text)
+            except Exception as e:
+                import traceback
+                print(f"[CRASH] parse() failed: {e}")
+                print(traceback.format_exc())
+                self._parse_error.emit()
+                continue
+            # Signal delivers to main thread via QueuedConnection (cross-thread)
+            self._parse_result_ready.emit(result, clean_text)
+
+    def _handle_parse_result(self, result, clean_text: str):
+        """Process parse result on the main thread."""
         # No command matched — fall back to AI conversation
         if result is None:
             self._chat.send(clean_text)
@@ -1167,9 +1211,42 @@ class FishWidget(QWidget):
 
         try:
             self._execute_command(result)
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(f"[CRASH] _execute_command({result.action}) failed: {e}")
+            print(traceback.format_exc())
             self._say("Oops, something went wrong with that command.")
             self._tts.say("Sorry, that didn't work.")
+
+    # ------------------------------------------------------------------
+    # Personality wrap for system command responses
+    # ------------------------------------------------------------------
+
+    _SYSTEM_ACTIONS = frozenset({
+        "open_app", "close_app", "switch_app", "kill_process", "open_folder",
+        "open_file_explorer", "open_file", "create_file", "set_volume",
+        "volume", "mute", "unmute", "lock_screen", "show_desktop",
+        "take_screenshot", "brightness", "disk_space", "wifi_toggle",
+        "open_settings", "theme", "open_calculator", "open_task_manager",
+        "close_window", "empty_recycle_bin", "restart_wifi", "whats_my_ip",
+        "open_last_project", "open_url", "open_website", "clear_clipboard",
+    })
+
+    def _personality_wrap(self, base_response: str) -> str:
+        """Add optional personality flavor to command confirmations."""
+        import random
+        if random.random() > 0.3:
+            return base_response
+        flavors = [
+            " ...you're welcome.",
+            " Done.",
+            " Obviously.",
+            " As commanded.",
+            " There.",
+            " Easy.",
+            " Consider it done.",
+        ]
+        return base_response + random.choice(flavors)
 
     def _execute_command(self, result):
         self._command_count += 1
@@ -1238,9 +1315,19 @@ class FishWidget(QWidget):
         elif result.action == "joke":
             result.response = get_random_joke_or_fact()
 
+        # --- Translation via Groq ---
+        elif result.action == "translate":
+            parts = result.target.split("|", 1)
+            text_part = parts[0] if parts else result.target
+            lang = parts[1] if len(parts) > 1 else "english"
+            self._run_groq_prompt(
+                f"translate|Translate '{text_part}' to {lang}. "
+                "Return ONLY the translation, nothing else.")
+            return
+
         # --- API-backed commands (run in thread to avoid blocking) ---
         elif result.action in ("weather", "forecast", "wikipedia", "news",
-                               "translate", "define", "exchange_rate",
+                               "define", "exchange_rate",
                                "holiday_check", "sun_times", "speed_test",
                                "find_file"):
             self._run_api_action(result)
@@ -1273,6 +1360,29 @@ class FishWidget(QWidget):
                     result.success = False
             else:
                 result.response = "Nothing on clipboard to save."
+                result.success = False
+
+        elif result.action == "clear_clipboard":
+            try:
+                import ctypes
+                ctypes.windll.user32.OpenClipboard(0)
+                ctypes.windll.user32.EmptyClipboard()
+                ctypes.windll.user32.CloseClipboard()
+            except Exception:
+                result.response = "Couldn't clear clipboard."
+                result.success = False
+
+        elif result.action == "set_volume":
+            try:
+                from ctypes import cast, POINTER
+                from comtypes import CLSCTX_ALL
+                from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMasterVolumeLevelScalar(int(result.target) / 100.0, None)
+            except Exception:
+                result.response = "Couldn't set exact volume. Try 'volume up/down'."
                 result.success = False
 
         # --- Groq-driven prompts ---
@@ -1375,6 +1485,224 @@ class FishWidget(QWidget):
         elif result.action == "point_at_screen":
             result.response = self._point_at_last_mention()
 
+        elif result.action == "open_last_project":
+            import subprocess as _sp
+            import json as _json
+            from pathlib import Path as _Path
+            storage = _Path.home() / "AppData/Roaming/Code/User/globalStorage/storage.json"
+            try:
+                data = _json.loads(storage.read_text(encoding="utf-8"))
+                recent = data.get("openedPathsList", {}).get("workspaces3", [])
+                for entry in recent[:5]:
+                    folder = entry.get("folderUri", "").replace("file:///", "")
+                    folder = folder.replace("%3A", ":").replace("/", "\\")
+                    if folder and _Path(folder).exists():
+                        _sp.Popen(["code", folder])
+                        result.response = f"Opening {_Path(folder).name}!"
+                        break
+                else:
+                    result.response = "Couldn't find a recent project."
+            except Exception:
+                result.response = "Couldn't read VSCode recent projects."
+
+        elif result.action == "whats_my_ip":
+            import socket
+            try:
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                result.response = f"Your local IP is {local_ip}"
+            except Exception:
+                result.response = "Couldn't get your IP address."
+
+        elif result.action == "restart_wifi":
+            import subprocess as _sp
+            try:
+                _sp.run(
+                    ["netsh", "interface", "set", "interface", "Wi-Fi", "disabled"],
+                    creationflags=_sp.CREATE_NO_WINDOW, timeout=10)
+                QTimer.singleShot(2000, lambda: _sp.run(
+                    ["netsh", "interface", "set", "interface", "Wi-Fi", "enabled"],
+                    creationflags=_sp.CREATE_NO_WINDOW, timeout=10))
+                result.response = "Restarting WiFi, give it a few seconds!"
+            except Exception:
+                result.response = "Couldn't restart WiFi — might need admin rights."
+
+        elif result.action == "empty_recycle_bin":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 0x07)
+                result.response = "Recycle bin emptied!"
+            except Exception:
+                try:
+                    import subprocess as _sp
+                    _sp.run(
+                        ["powershell", "-Command", "Clear-RecycleBin -Force"],
+                        creationflags=_sp.CREATE_NO_WINDOW, timeout=10)
+                    result.response = "Recycle bin emptied!"
+                except Exception:
+                    result.response = "Couldn't empty the recycle bin."
+                    result.success = False
+
+        elif result.action == "open_calculator":
+            import subprocess as _sp
+            _sp.Popen("calc.exe")
+            result.response = "Opening calculator!"
+
+        elif result.action == "open_task_manager":
+            import subprocess as _sp
+            _sp.Popen("taskmgr.exe")
+            result.response = "Opening Task Manager!"
+
+        elif result.action == "close_window":
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+            result.response = "Closing that window!"
+
+        elif result.action == "surprise_me":
+            import random as _rng
+            options = [
+                ("play_anim", _rng.choice(["painting", "gaming", "gardening",
+                                            "journaling", "piano"])),
+                ("play_anim", _rng.choice(["little_dance", "excited_wiggle",
+                                            "chase_tail", "sneeze_fly", "hiccup"])),
+                ("dance", ""),
+                ("spin", ""),
+            ]
+            action, target = _rng.choice(options)
+            if action == "play_anim":
+                self._play_animation_sequence(target)
+                result.response = _rng.choice([
+                    "Fine, I'll do something.",
+                    "Watch this.",
+                    "Okay okay, here.",
+                    "Don't judge me.",
+                ])
+            else:
+                self._on_behavior(action, "")
+                result.response = "There you go."
+
+        elif result.action == "how_are_you_feeling":
+            result.response = self._get_mood_and_reason()
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+
+        elif result.action == "tell_joke_italian":
+            self._run_groq_prompt(
+                "joke_italian|Tell me one short funny joke in Italian. "
+                "Max 2 sentences. Return only the joke, nothing else."
+            )
+            self.animator.queue_reaction(ReactionType.BOUNCE)
+            self.emotions.spike("happy", 0.3)
+            return
+
+        elif result.action == "try_to_sing":
+            import random as _rng
+            attempts = [
+                "La la la... hmm. No.",
+                "\U0001f3b5 Twinkle twinkle\u2014 actually I don't know the rest.",
+                "Do re mi fa... that's all I've got.",
+                "I had a whole song ready and now I forgot it.",
+                "La la la la LA\u2014 okay I'm not a singer.",
+                "\U0001f3b5 Never gonna\u2014 no wait that's copyrighted.",
+            ]
+            result.response = _rng.choice(attempts)
+            from core.animation_library import ANIMATION_LIBRARY
+            seq = ANIMATION_LIBRARY.get("try_whistle")
+            if seq:
+                self.animator.play_sequence(seq)
+            self.emotions.spike("happy", 0.2)
+
+        elif result.action == "go_away":
+            import random as _rng
+            screen = QApplication.primaryScreen().availableGeometry()
+            corners = [
+                (screen.left() + 10, screen.top() + 10),
+                (screen.right() - self.width() - 10, screen.top() + 10),
+                (screen.left() + 10, screen.bottom() - self.height() - 10),
+                (screen.right() - self.width() - 10, screen.bottom() - self.height() - 10),
+            ]
+            cx, cy = _rng.choice(corners)
+            self._walk_to(cx, cy, speed=600.0)
+            result.response = _rng.choice([
+                "Fine. I'll be in the corner.",
+                "Okay okay, I'm going.",
+                "You'll miss me.",
+                "Rude. But okay.",
+                "*retreats dramatically*",
+            ])
+
+        elif result.action == "opinion_on_app":
+            app_name = result.target
+            self._run_groq_prompt(
+                f"opinion|Give your honest one-sentence opinion about {app_name} "
+                f"as Little Fish, a sarcastic but warm desktop companion. "
+                f"Be specific and funny. Max 20 words."
+            )
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+            return
+
+        elif result.action == "what_learned_about_me":
+            import random as _rng
+            from core.fish_memory import FishMemory
+            fm = FishMemory.load()
+            if fm.memories:
+                sample = _rng.sample(fm.memories, min(3, len(fm.memories)))
+                facts = [m["text"] for m in sample]
+                result.response = "Let me think... " + " Also, ".join(facts) + "."
+            else:
+                result.response = "I'm still getting to know you."
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+
+        elif result.action == "rate_my_screen":
+            self._start_screen_review()
+            return
+
+        elif result.action == "dance":
+            for i in range(3):
+                QTimer.singleShot(i * 400, lambda: self.animator.queue_reaction(ReactionType.BOUNCE))
+            self.animator.spawn_particle("sparkle")
+            import random as _rng
+            result.response = _rng.choice([
+                "\U0001f3b6 Dance dance dance!",
+                "Watch my moves!",
+                "I've been practicing.",
+            ])
+
+        elif result.action == "go_to_sleep":
+            self.emotions.values["sleepy"] = 0.9
+            self.animator.spawn_particle("zzz")
+            import random as _rng
+            result.response = _rng.choice([
+                "Good night... zzz...",
+                "*yawns* ...okay, good night.",
+                "Finally... sleep time.",
+            ])
+
+        elif result.action == "wake_up":
+            self.emotions.values["sleepy"] = 0.1
+            self.animator.queue_reaction(ReactionType.BOUNCE)
+            import random as _rng
+            result.response = _rng.choice([
+                "*yawns* ...okay I'm up.",
+                "Five more minutes\u2014 fine.",
+                "I was having a good dream.",
+                "Okay okay, I'm awake.",
+            ])
+
+        elif result.action == "give_compliment":
+            self._run_groq_prompt(
+                "motivate|Give this person a genuine warm compliment. "
+                "You are Little Fish, their desktop companion who knows them well. "
+                "One sentence, specific and sincere. Not generic."
+            )
+            self.animator.spawn_particle("heart")
+            self.animator.queue_reaction(ReactionType.BOUNCE)
+            return
+
+        elif result.action == "tell_fact":
+            result.response = get_random_joke_or_fact()
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+
         # Emotion reactions
         if result.success:
             self.emotions.spike("happy", 0.15)
@@ -1386,18 +1714,25 @@ class FishWidget(QWidget):
 
         # Show response in bubble + speak it
         if result.response:
+            if result.action in self._SYSTEM_ACTIONS:
+                result.response = self._personality_wrap(result.response)
             self._say(result.response)
             self._tts.say(result.response)
 
     def _on_chat_response(self, text: str):
         """Called when AI chat generates a response."""
-        self._say(text)
-        self._tts.say(text)
-        self.emotions.spike("happy", 0.1)
-        self.animator.queue_reaction(ReactionType.BOUNCE)
-        self._shared_state.record_phrase()
-        self._relationship.add_points("conversation")
-        self._behavior_engine.record_interaction()
+        try:
+            self._say(text)
+            self._tts.say(text)
+            self.emotions.spike("happy", 0.1)
+            self.animator.queue_reaction(ReactionType.BOUNCE)
+            self._shared_state.record_phrase()
+            self._relationship.add_points("conversation")
+            self._behavior_engine.record_interaction()
+        except Exception as e:
+            import traceback
+            print(f"[CRASH] _on_chat_response failed: {e}")
+            print(traceback.format_exc())
 
     def _get_chat_context(self) -> dict:
         """Return live context dict for the AI system prompt."""

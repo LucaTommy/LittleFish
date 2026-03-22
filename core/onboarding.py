@@ -1,6 +1,6 @@
 """
 Onboarding flow for Little Fish.
-Runs on first launch (or when invoked from launcher settings).
+\Runs on first launch (or when invoked from launcher settings).
 Collects: age, usage type, chronotype, talkativeness, fish name.
 Saves to UserProfile and settings.
 
@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QLineEdit, QRadioButton, QButtonGroup, QWidget, QStackedWidget,
     QSpinBox, QFrame, QSpacerItem, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QColor
 
 
 # ── Styling ──────────────────────────────────────────────────────────
