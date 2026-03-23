@@ -43,6 +43,7 @@ from core.app_reactions import AppReactions
 from core.behavior_engine import BehaviorEngine
 from core.user_profile import UserProfile
 from core.relationship import Relationship
+from core.learning_engine import LearningEngine
 from core.movement_engine import MovementEngine, MovementState
 
 
@@ -168,6 +169,15 @@ class FishWidget(QWidget):
         self._chat.set_context_getter(self._get_chat_context)
         self._chat.response_ready.connect(self._on_chat_response)
         self._chat.error_occurred.connect(lambda e: self._say("I can't think right now..."))
+
+        # --- Learning Engine ---
+        try:
+            self._learning_engine = LearningEngine(groq_keys, self._config)
+            self._chat.set_learning_engine(self._learning_engine)
+            self._learning_engine.log_session_start(time.time())
+        except Exception as exc:
+            print(f"[LEARN] Failed to init LearningEngine: {exc}")
+            self._learning_engine = None
 
         self._reviewer = ScreenReviewer(groq_keys)
         self._reviewer.review_ready.connect(self._on_review_ready)
@@ -3444,6 +3454,14 @@ class FishWidget(QWidget):
         self.emotions._save_trust()
         self._relationship.record_session_end()
         self._relationship.save()
+        # Distill session knowledge before shutting down
+        if self._learning_engine:
+            try:
+                with self._chat._history_lock:
+                    history = list(self._chat._history)
+                self._learning_engine.log_session_end(history)
+            except Exception as exc:
+                print(f"[LEARN] Session end logging failed: {exc}")
         self._voice.stop_listening()
         self._tts.stop()
         self._monitor.stop()

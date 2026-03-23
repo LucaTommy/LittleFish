@@ -67,6 +67,7 @@ class FishChat(QObject):
         self._user_profile = user_profile       # UserProfile or None
         self._relationship = relationship       # Relationship or None
         self._context_getter = None             # callable -> dict (live context)
+        self._learning_engine = None              # LearningEngine or None
 
         # Load persistent chat history
         from core.intelligence import load_chat_history
@@ -84,6 +85,10 @@ class FishChat(QObject):
         """Set a callable that returns live context dict with keys:
            active_app, session_hours, session_mins, hour, energy, dominant, compound"""
         self._context_getter = getter
+
+    def set_learning_engine(self, engine):
+        """Attach the LearningEngine for context injection and interaction logging."""
+        self._learning_engine = engine
 
     def _build_system_prompt(self) -> str:
         """Build full system prompt from character layer + emotion + relationship + profile + live context."""
@@ -190,6 +195,15 @@ class FishChat(QObject):
         except Exception:
             pass
 
+        # ── Learned context (from Learning Engine) ──
+        if self._learning_engine:
+            try:
+                learned = self._learning_engine.get_context_injection()
+                if learned:
+                    system += f"\n{learned}"
+            except Exception:
+                pass
+
         # ── Core behavioral directive ──
         system += (
             "\nNever give generic philosophical responses. Always respond specifically "
@@ -279,6 +293,12 @@ class FishChat(QObject):
                 # Persist chat history
                 from core.intelligence import save_chat_history
                 save_chat_history(history_to_save)
+                # Log interaction for learning engine
+                if self._learning_engine:
+                    try:
+                        self._learning_engine.log_interaction(user_text, reply, {})
+                    except Exception:
+                        pass
                 self.response_ready.emit(reply)
                 return
             except Exception as e:
