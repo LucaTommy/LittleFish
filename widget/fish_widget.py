@@ -37,6 +37,7 @@ from core.shared_state import SharedState
 from core.intelligence import (
     ScheduleTracker, TodoList, analyze_clipboard,
     generate_morning_briefing, get_random_joke_or_fact,
+    get_random_joke, get_random_fact,
 )
 from core.app_reactions import AppReactions
 from core.behavior_engine import BehaviorEngine
@@ -1352,7 +1353,7 @@ class FishWidget(QWidget):
             todo_count = self._todo_list.count_pending()
             result.response = generate_morning_briefing(weather, mood, todo_count)
         elif result.action == "joke":
-            result.response = get_random_joke_or_fact()
+            result.response = get_random_joke()
 
         # --- Translation via Groq ---
         elif result.action == "translate":
@@ -1739,7 +1740,7 @@ class FishWidget(QWidget):
             return
 
         elif result.action == "tell_fact":
-            result.response = get_random_joke_or_fact()
+            result.response = get_random_fact()
             self.animator.queue_reaction(ReactionType.HEAD_TILT)
 
         # Emotion reactions

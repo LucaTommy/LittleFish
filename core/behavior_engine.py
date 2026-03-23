@@ -472,20 +472,20 @@ class BehaviorEngine(QObject):
 
         # -- Hobby animations (longer, the fish settles in) --
         pool.append(B("anim_painting", "animation", "play_anim",
-                       "painting", cooldown=900,
-                       condition=lambda e, h, d, idle, app: e in ("content", "happy", "curious") and idle > 120))
+                       "painting", cooldown=600,
+                       condition=lambda e, h, d, idle, app: idle > 60))
         pool.append(B("anim_gaming", "animation", "play_anim",
-                       "gaming", cooldown=900,
-                       condition=lambda e, h, d, idle, app: e in ("bored", "content", "happy") and idle > 90))
+                       "gaming", cooldown=600,
+                       condition=lambda e, h, d, idle, app: idle > 45))
         pool.append(B("anim_gardening", "animation", "play_anim",
-                       "gardening", cooldown=900,
-                       condition=lambda e, h, d, idle, app: e in ("content", "happy") and 8 <= h <= 18))
+                       "gardening", cooldown=600,
+                       condition=lambda e, h, d, idle, app: 6 <= h <= 20))
         pool.append(B("anim_journaling", "animation", "play_anim",
-                       "journaling", cooldown=900,
-                       condition=lambda e, h, d, idle, app: e in ("content", "curious", "bored") and idle > 90))
+                       "journaling", cooldown=600,
+                       condition=lambda e, h, d, idle, app: idle > 45))
         pool.append(B("anim_piano", "animation", "play_anim",
-                       "piano", cooldown=900,
-                       condition=lambda e, h, d, idle, app: e in ("happy", "content") and idle > 60))
+                       "piano", cooldown=600,
+                       condition=lambda e, h, d, idle, app: idle > 30))
 
         _thoughts = [
             "...hm.",

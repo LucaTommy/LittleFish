@@ -298,7 +298,53 @@ JOKES_AND_FACTS = [
     "Butterflies taste with their feet!",
 ]
 
+_JOKES = [
+    "Why don't fish play piano? Because you can't tuna fish!",
+    "Why do fish live in salt water? Because pepper makes them sneeze!",
+    "What do you call a fish without eyes? A fsh!",
+    "Why did the fish blush? Because it saw the ocean's bottom!",
+    "What's a fish's favorite instrument? The bass guitar!",
+    "What do you call a lazy crayfish? A slobster!",
+    "Where do fish keep their money? In the river bank!",
+    "What did the fish say when it hit a wall? Dam!",
+    "Why are fish so smart? Because they live in schools!",
+    "What do sea monsters eat? Fish and ships!",
+]
+
+_FACTS = [
+    "Did you know octopuses have three hearts?",
+    "A group of flamingos is called a 'flamboyance'!",
+    "Honey never spoils — they found 3000-year-old honey in Egyptian tombs!",
+    "The shortest war in history lasted 38 minutes.",
+    "Sea otters hold hands while sleeping so they don't drift apart.",
+    "A day on Venus is longer than a year on Venus!",
+    "Cows have best friends and get stressed when separated.",
+    "Bananas are technically berries, but strawberries aren't!",
+    "The average person walks about 100,000 miles in a lifetime.",
+    "Dolphins have names for each other!",
+    "The moon has moonquakes!",
+    "A jiffy is an actual unit of time: 1/100th of a second.",
+    "Elephants are the only animals that can't jump.",
+    "Your nose can remember 50,000 different scents!",
+    "Butterflies taste with their feet!",
+    "A bolt of lightning is five times hotter than the surface of the sun!",
+    "There are more stars in the universe than grains of sand on Earth!",
+    "The human brain uses 20% of the body's total energy.",
+    "Sharks have been around longer than trees!",
+    "An octopus has blue blood!",
+]
+
 
 def get_random_joke_or_fact() -> str:
     """Return a random joke or fun fact."""
     return random.choice(JOKES_AND_FACTS)
+
+
+def get_random_joke() -> str:
+    """Return a random joke."""
+    return random.choice(_JOKES)
+
+
+def get_random_fact() -> str:
+    """Return a random fun fact."""
+    return random.choice(_FACTS)

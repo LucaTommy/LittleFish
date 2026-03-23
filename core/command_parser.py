@@ -133,9 +133,7 @@ _FAST_PATTERNS = [
     (r"(?:search|google|cerca)\s+(?:on\s+google\s+)?(?:for\s+)?(.+)",
      lambda m: _google_search(m.group(1).strip())),
 
-    # Games
-    (r"(?:play|let'?s?\s+play|gioca(?:re)?(?:\s+a)?)\s+(.+)",
-     lambda m: CommandResult("play_game", m.group(1).strip(), "")),
+    # Games (AFTER hobby pattern to avoid catching "play your hobby")
     (r"(?:games?|giochi)\s*(?:menu)?",
      lambda m: CommandResult("game_picker", "", "")),
 
@@ -164,14 +162,18 @@ _FAST_PATTERNS = [
      lambda m: CommandResult("what_learned_about_me", "", "")),
     (r"(?:look\s+at\s+(?:the\s+)?(?:my\s+)?screen|review\s+(?:the\s+)?screen|guarda\s+(?:lo\s+)?schermo|rate\s+my\s+screen)",
      lambda m: CommandResult("rate_my_screen", "", "")),
-    (r"(?:hobby|play\s+(?:with\s+)?(?:your\s+)?hobby|fai\s+(?:il\s+)?(?:tuo\s+)?hobby)",
+    (r"(?:hobby|play\s+(?:with\s+)?(?:your\s+)?hobby|fai\s+(?:il\s+)?(?:tuo\s+)?hobby|do\s+(?:a\s+)?hobby)",
      lambda m: CommandResult("play_hobby", "random", "")),
+
+    # Games (generic "play X" — AFTER hobby to avoid catching "play your hobby")
+    (r"(?:play|let'?s?\s+play|gioca(?:re)?(?:\s+a)?)\s+(.+)",
+     lambda m: CommandResult("play_game", m.group(1).strip(), "")),
 
     # News / weather
     (r"(?:news|notizie|headlines)\b",
      lambda m: CommandResult("news", "", "")),
-    (r"(?:weather|che\s+tempo\s+fa)\s*(?:in|a|at)?\s*(.+)?",
-     lambda m: CommandResult("weather", (m.group(1) or "").strip(), "")),
+    (r"(?:weather|che\s+tempo\s+fa|meteo)\s*(?:here\s+)?(?:in|a|at|di)?\s*(.+)?",
+     lambda m: CommandResult("weather", _clean_city(m.group(1)), "")),
 
     # Pomodoro (before generic "start")
     (r"(?:start\s+)?pomodoro|(?:inizia\s+(?:un\s+)?)?pomodoro",
@@ -253,6 +255,16 @@ def _fast_open(target: str) -> CommandResult:
         return CommandResult("open_settings", "", "Opening settings!")
     # Fall through to app open
     return _open_app(lower)
+
+
+def _clean_city(raw: str | None) -> str:
+    """Strip filler words and punctuation from a city name extracted by regex."""
+    if not raw:
+        return ""
+    import re
+    city = raw.strip().rstrip("?.!,")
+    city = re.sub(r"^(?:here\s+)?(?:in|a|at|di|for)\s+", "", city, flags=re.IGNORECASE)
+    return city.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1035,12 +1047,29 @@ def _open_app(name: str) -> CommandResult:
         return CommandResult("open_app", cmd, f"Couldn't open {name}.", success=False)
 
 
+# Folder names that should close an Explorer window instead of killing explorer.exe
+_FOLDER_CLOSE_NAMES = frozenset({
+    "downloads", "download", "desktop", "documents", "document",
+    "pictures", "music", "videos", "folder",
+    "documenti", "scrivania", "immagini",
+})
+
+
 def _close_app(name: str) -> CommandResult:
-    target = name.lower()
+    target = name.lower().rstrip("?.!")
+    # If the user wants to close a folder window, close matching explorer windows
+    is_folder = any(fw in target for fw in _FOLDER_CLOSE_NAMES)
+    if is_folder or target in ("file explorer", "explorer", "esplora file"):
+        return _close_explorer_window(target)
+    # Never kill system-critical processes
+    _PROTECTED = {"explorer.exe", "svchost.exe", "csrss.exe", "winlogon.exe",
+                  "dwm.exe", "lsass.exe", "services.exe", "system"}
     killed = False
     for proc in psutil.process_iter(["name"]):
         try:
             pname = proc.info["name"].lower()
+            if pname in _PROTECTED:
+                continue
             if target in pname:
                 proc.terminate()
                 killed = True
@@ -1049,6 +1078,33 @@ def _close_app(name: str) -> CommandResult:
     if killed:
         return CommandResult("close_app", target, f"Closed {name}.")
     return CommandResult("close_app", target, f"Couldn't find {name} running.", success=False)
+
+
+def _close_explorer_window(target: str) -> CommandResult:
+    """Close an Explorer file browser window that matches the target folder name."""
+    try:
+        import win32gui
+        closed = False
+        def callback(hwnd, _):
+            nonlocal closed
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            cls = win32gui.GetClassName(hwnd)
+            if cls != "CabinetWClass":  # Explorer folder windows
+                return True
+            title = win32gui.GetWindowText(hwnd).lower()
+            # Match any word from the target in the window title
+            target_words = target.replace("folder", "").replace("the", "").split()
+            if any(w in title for w in target_words if len(w) > 2):
+                win32gui.PostMessage(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                closed = True
+            return True
+        win32gui.EnumWindows(callback, None)
+        if closed:
+            return CommandResult("close_app", target, f"Closed the folder window.")
+        return CommandResult("close_app", target, f"No matching folder window found.", success=False)
+    except Exception:
+        return CommandResult("close_app", target, f"Couldn't close the folder window.", success=False)
 
 
 def _volume(direction: str) -> CommandResult:
@@ -2061,12 +2117,23 @@ def _open_folder(name: str) -> CommandResult:
 _APP_PROCESS_NAMES = {
     "vscode": "Code.exe",
     "visual studio": "Code.exe",
+    "visual studio code": "Code.exe",
+    "vs code": "Code.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
     "chrome": "chrome.exe",
     "firefox": "firefox.exe",
+    "brave": "brave.exe",
     "spotify": "Spotify.exe",
     "discord": "Discord.exe",
     "telegram": "Telegram.exe",
     "whatsapp": "WhatsApp.exe",
+    "steam": "steam.exe",
+    "notepad": "notepad.exe",
+    "word": "WINWORD.EXE",
+    "excel": "EXCEL.EXE",
+    "outlook": "OUTLOOK.EXE",
+    "explorer": "explorer.exe",
 }
 
 
