@@ -130,6 +130,7 @@ class VoiceRecorder(QObject):
         self._tts_ref = tts  # reference to TTS for barge-in
         self._tts_cooldown_until = 0.0  # monotonic deadline after TTS ends
         self._last_tts_text = ""        # last text spoken by TTS (echo filter)
+        self._beep_pending = False      # play beep when cooldown expires
 
         # VAD mode
         self._vad_enabled = config.get("voice", {}).get("always_listening", False)
@@ -257,8 +258,7 @@ class VoiceRecorder(QObject):
             self._conv_state = ConversationState.ACTIVE_LISTENING
             self._conv_last_activity = _time.monotonic()
             print("[CONV] Active window — listening for follow-up")
-            # Play ready beep during cooldown (VAD ignores audio in cooldown window)
-            self._play_ready_beep()
+            self._beep_pending = True  # beep plays when cooldown expires
 
     def _check_conversation_timeout(self):
         """Check if conversation should end due to silence timeout."""
@@ -268,11 +268,10 @@ class VoiceRecorder(QObject):
                 self.conversation_ended.emit()
 
     def _play_ready_beep(self):
-        """Play a short beep to signal the mic is ready for input.
+        """Play a short beep to signal the mic is actively listening.
 
-        Runs in a background thread to avoid blocking the main thread.
-        The beep is played during the TTS cooldown window, so the VAD
-        will not pick it up as speech.
+        Called when TTS cooldown expires — the beep means 'talk NOW'.
+        Runs in a background thread to avoid blocking the VAD loop.
         """
         def _beep():
             try:
@@ -327,6 +326,10 @@ class VoiceRecorder(QObject):
                         continue
                     if _time.monotonic() < self._tts_cooldown_until:
                         continue
+                    # Cooldown just expired — play beep so user knows to talk NOW
+                    if self._beep_pending:
+                        self._beep_pending = False
+                        self._play_ready_beep()
 
                     rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
 

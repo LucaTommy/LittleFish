@@ -104,8 +104,8 @@ _FAST_PATTERNS = [
     # Time and date
     (r"(?:what\s+(?:time|day)\s+is\s+it|tell\s+(?:me\s+)?the\s+time|che\s+ora?\s+(?:è|e'?)|quanto\s+(?:è|e')?\s+tardi)",
      lambda m: _get_time()),
-    (r"(?:what'?s?\s+the\s+date|what\s+date\s+is\s+it|che\s+giorno\s+(?:è|e'?))",
-     lambda m: CommandResult("tell_date", "", "")),
+    (r"(?:what'?s?\s+the\s+date|what\s+(?:is\s+the\s+)?date|what\s+date\s+is\s+it|che\s+giorno\s+(?:è|e'?))",
+     lambda m: _get_date()),
 
     # System status / what's my IP
     (r"(?:what'?s?\s+my\s+ip|my\s+ip\s+address|qual\s+(?:è|e')?\s+il\s+mio\s+ip|il\s+mio\s+ip)",
@@ -113,7 +113,7 @@ _FAST_PATTERNS = [
     (r"(?:system\s+status|cpu|ram|battery|batteria)",
      lambda m: CommandResult("system_status", "", "")),
     (r"(?:disk\s+space|spazio\s+(?:su\s+)?disco)",
-     lambda m: CommandResult("disk_space", "", "")),
+     lambda m: CommandResult("system_status", "disk", "")),
 
     # Empty recycle bin
     (r"(?:empty\s+(?:the\s+)?(?:recycle\s+bin|trash)|svuota\s+(?:il\s+)?cestino)",
@@ -143,7 +143,7 @@ _FAST_PATTERNS = [
     (r"(?:surprise\s+me|fammi\s+una\s+sorpresa|fai\s+qualcosa)",
      lambda m: CommandResult("surprise_me", "", "")),
     (r"(?:come\s+here|vieni\s+qui)",
-     lambda m: CommandResult("come_here", "", "")),
+     lambda m: CommandResult("come_to_cursor", "", "")),
     (r"(?:go\s+away|vattene|vai\s+via)",
      lambda m: CommandResult("go_away", "", "")),
     (r"(?:dance|balla)",
@@ -157,7 +157,7 @@ _FAST_PATTERNS = [
     (r"(?:tell\s+(?:me\s+)?(?:a\s+)?fact|dimmi\s+(?:qualcosa\s+di\s+)?interessante|fun\s+fact)",
      lambda m: CommandResult("tell_fact", "", "")),
     (r"(?:how\s+are\s+you|come\s+stai|come\s+va)",
-     lambda m: CommandResult("how_are_you", "", "")),
+     lambda m: CommandResult("how_are_you_feeling", "", "")),
     (r"(?:compliment|give\s+(?:me\s+)?(?:a\s+)?compliment|fammi\s+un\s+complimento)",
      lambda m: CommandResult("give_compliment", "", "")),
     (r"(?:what\s+(?:have\s+you\s+)?learn(?:ed)?\s+about\s+me|cosa\s+hai\s+imparato\s+(?:su\s+)?(?:di\s+)?me)",
@@ -175,11 +175,11 @@ _FAST_PATTERNS = [
 
     # Pomodoro (before generic "start")
     (r"(?:start\s+)?pomodoro|(?:inizia\s+(?:un\s+)?)?pomodoro",
-     lambda m: CommandResult("start_pomodoro", "", "")),
+     lambda m: CommandResult("pomodoro", "", "")),
 
     # Session / uptime
     (r"(?:how\s+long\s+(?:have\s+i\s+been\s+)?working|da\s+quanto\s+(?:sto\s+)?lavor)",
-     lambda m: CommandResult("how_long_working", "", "")),
+     lambda m: CommandResult("session_time", "", "")),
 
     # Greetings & farewells — fast path avoids Groq round-trip
     (r"^(?:hi|hello|hey|ciao|buongiorno|buonasera)(?:[\s!.,]*)?$",
@@ -1082,6 +1082,12 @@ def _get_time() -> CommandResult:
     now = datetime.datetime.now()
     time_str = now.strftime("%I:%M %p")
     return CommandResult("info", "time", f"It's {time_str}.")
+
+
+def _get_date() -> CommandResult:
+    now = datetime.datetime.now()
+    date_str = now.strftime("%A, %B %d, %Y")
+    return CommandResult("info", "date", f"Today is {date_str}.")
 
 
 def _take_screenshot() -> CommandResult:
