@@ -85,10 +85,17 @@ _HALLUCINATION_RE = _re.compile(
 # Short single-word filter: if transcription is 1 word and <= 3 chars,
 # only allow it if it matches a known valid short utterance
 _VALID_SHORT_WORDS = frozenset({
-    "fish", "ciao", "hey", "hi", "yes", "no", "stop", "help",
-    "mute", "play", "game", "news", "joke", "hide", "come",
-    "mood", "rest", "sì", "ehi", "qui", "che", "dai",
+    # 2 chars - very strict
+    "ok", "sì", "si", "ah", "oh", "no", "hi", "go",
+    # 3 chars - common commands
+    "hey", "yes", "beh", "mah", "dai", "che", "vai",
+    "mute", "play", "stop", "help", "fish", "come",
+    "game", "news", "joke", "hide", "mood", "rest",
+    "time", "date", "wait", "next", "skip", "back",
+    "dance", "wake", "sing", "spin", "open", "cosa",
+    "ciao", "ehi", "qui", "what", "basta", "dimmi",
 })
+
 
 
 class ConversationState(Enum):
