@@ -94,6 +94,25 @@ def get_github_token() -> str:
     return load_secrets().get("github_token", "")
 
 
+def get_brave_key() -> str:
+    """Return Brave Search API key from local secrets."""
+    return load_secrets().get("brave_api_key", "")
+
+
+def get_google_token_status() -> dict:
+    """Check if Google OAuth token exists and which scopes are authorised."""
+    token_path = _appdata_dir() / "google_token.json"
+    if not token_path.exists():
+        return {"connected": False, "detail": "Not connected"}
+    try:
+        data = json.loads(token_path.read_text(encoding="utf-8"))
+        scopes = data.get("scopes", [])
+        return {"connected": True, "scopes": scopes,
+                "detail": f"Connected ({len(scopes)} scopes)"}
+    except (json.JSONDecodeError, OSError):
+        return {"connected": False, "detail": "Token file corrupt"}
+
+
 def migrate_secrets_from_settings() -> None:
     """One-time migration: move groq_keys/github_token from settings.json to secrets.json."""
     config_path = get_config_path()

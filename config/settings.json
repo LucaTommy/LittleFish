@@ -64,7 +64,7 @@
     "clipboard_reactions": false,
     "app_awareness": true,
     "todo_list": false,
-    "morning_briefing": false,
+    "morning_briefing": true,
     "jokes": true,
     "autonomous_behavior": true
   }

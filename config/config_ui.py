@@ -597,6 +597,50 @@ class SettingsDialog(QDialog):
         groq_group.setLayout(groq_layout)
         layout.addWidget(groq_group)
 
+        # Brave Search API key
+        brave_group = QGroupBox("Brave Search API Key (for web search & research)")
+        brave_layout = QHBoxLayout()
+        self._brave_key_edit = QLineEdit()
+        self._brave_key_edit.setPlaceholderText("BSA...")
+        self._brave_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        brave_key = secrets.get("brave_api_key", "")
+        if brave_key:
+            self._brave_key_edit.setText(brave_key)
+        brave_show = QPushButton("Show")
+        brave_show.setFixedWidth(50)
+        brave_show.setCheckable(True)
+        brave_show.toggled.connect(lambda checked, e=self._brave_key_edit, b=brave_show: (
+            e.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password),
+            b.setText("Hide" if checked else "Show"),
+        ))
+        brave_layout.addWidget(self._brave_key_edit)
+        brave_layout.addWidget(brave_show)
+        brave_group.setLayout(brave_layout)
+        layout.addWidget(brave_group)
+
+        # Google connection status
+        google_group = QGroupBox("Google Services (Gmail, Calendar, Drive, Tasks)")
+        google_layout = QVBoxLayout()
+        from config import get_google_token_status
+        status = get_google_token_status()
+        if status["connected"]:
+            status_label = QLabel(f"✓ {status['detail']}")
+            status_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
+        else:
+            status_label = QLabel(f"✗ {status['detail']}")
+            status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        google_layout.addWidget(status_label)
+        hint = QLabel(
+            "Google auth is handled via OAuth. Say 'check my email' or\n"
+            "'what's on my calendar' and Little Fish will open a browser\n"
+            "to connect your Google account on first use."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #95a5a6; font-size: 11px;")
+        google_layout.addWidget(hint)
+        google_group.setLayout(google_layout)
+        layout.addWidget(google_group)
+
         # GitHub token
         gh_group = QGroupBox("GitHub Token (optional — for private repo updates)")
         gh_layout = QVBoxLayout()
@@ -636,8 +680,18 @@ class SettingsDialog(QDialog):
             secrets["github_token"] = token
         else:
             secrets.pop("github_token", None)
+        brave = self._brave_key_edit.text().strip()
+        if brave:
+            secrets["brave_api_key"] = brave
+        else:
+            secrets.pop("brave_api_key", None)
         save_secrets(secrets)
-        self._apikeys_status.setText(f"Saved! {len(keys)} Groq key(s) stored locally.")
+        parts = [f"{len(keys)} Groq key(s)"]
+        if brave:
+            parts.append("Brave key")
+        if token:
+            parts.append("GitHub token")
+        self._apikeys_status.setText(f"Saved! {', '.join(parts)} stored locally.")
 
     # ------------------------------------------------------------------
     # Tab: System

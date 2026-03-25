@@ -3,6 +3,7 @@ __pycache__/
 build/
 build2/
 dist/
+dist_new/
 Output/
 *.spec
 _backup/

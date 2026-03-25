@@ -5,6 +5,7 @@ Handles dragging, edge resistance, pixel-art scaling, context menu, settings.
 
 import json
 import math
+import random
 import time
 import datetime
 from pathlib import Path
@@ -54,6 +55,28 @@ DEBUG_SLEEP = False                 # Set True to log sleep guard blocks
 
 from config import CONFIG_PATH, get_groq_keys
 
+HEAVY_TASKS = frozenset({
+    'weather', 'forecast', 'wikipedia', 'news', 'translate',
+    'screen_review', 'groq_prompt', 'rate_my_screen', 'find_file', 'speed_test',
+})
+
+# Feature 5: Touch Grass Blockade — work-related process names
+WORK_APPS = frozenset({
+    'code.exe', 'devenv.exe', 'pycharm64.exe', 'pycharm.exe',
+    'idea64.exe', 'idea.exe', 'webstorm64.exe', 'rider64.exe',
+    'clion64.exe', 'goland64.exe', 'eclipse.exe', 'netbeans64.exe',
+    'sublime_text.exe', 'atom.exe', 'notepad++.exe',
+    'powershell.exe', 'cmd.exe', 'windowsterminal.exe', 'wt.exe',
+    'mintty.exe', 'conemu64.exe', 'alacritty.exe',
+})
+
+# Feature 7: Social Media Judge — procrastination site keywords in window titles
+PROCRASTINATION_SITES = frozenset({
+    'youtube', 'reddit', 'twitter', 'x.com', 'facebook', 'instagram',
+    'tiktok', 'twitch', 'netflix', 'hulu', 'disneyplus', 'disney+',
+    'pinterest', 'tumblr', '9gag', 'buzzfeed',
+})
+
 UNPROMPTED_PHRASES = [
     "I wonder what's for lunch...",
     "Hey, you doing okay?",
@@ -72,11 +95,31 @@ UNPROMPTED_PHRASES = [
     "I bet you didn't know I could wink. Watch!",
 ]
 
+# Feature: Sleep Talking — mumbled lines during deep sleep
+SLEEP_TALK_LINES = [
+    "...no... that's my coral...",
+    "...mmm... five more minutes...",
+    "...the bubbles are... everywhere...",
+    "...don't touch my... treasure...",
+    "...swimming... so fast...",
+    "...mom said... no hooks...",
+    "...the current is... warm today...",
+    "...shh... the whale is sleeping too...",
+    "...I can fly... in the deep...",
+]
+
+# Feature: Digital Hoarding / Scrapbook paths
+import os as _os
+SCRAPBOOK_DIR = Path(_os.environ.get("APPDATA", ".")) / "LittleFish" / "scrapbook"
+SCRAPBOOK_INDEX = SCRAPBOOK_DIR / "index.json"
+MAX_SCRAPBOOK_ENTRIES = 50
+
 
 class FishWidget(QWidget):
     # Signal for parse worker to deliver results back to the main thread
     _parse_result_ready = pyqtSignal(object, str)  # (CommandResult|None, clean_text)
     _parse_error = pyqtSignal()  # parse() crashed
+    _api_result_ready = pyqtSignal(str)  # background API result → main thread
 
     def __init__(self):
         super().__init__()
@@ -84,6 +127,7 @@ class FishWidget(QWidget):
         # Connect parse result signal to main-thread handler
         self._parse_result_ready.connect(self._handle_parse_result)
         self._parse_error.connect(lambda: self._say("Something went wrong parsing that."))
+        self._api_result_ready.connect(self._show_api_result)
 
         # --- Load config ---
         self._config = self._load_config()
@@ -200,6 +244,7 @@ class FishWidget(QWidget):
         # --- Timer / Reminder / Power ---
         self._active_timers: list = []
         self._pending_power: str | None = None
+        self._pending_email_reply_to: str | None = None
         self._custom_name: str = ""
 
         # --- Interaction tracking ---
@@ -262,6 +307,12 @@ class FishWidget(QWidget):
         self._clip_timer.setInterval(3000)  # every 3s
         self._clip_timer.timeout.connect(self._poll_clipboard)
         self._clip_timer.start()
+
+        # --- Proactive screen check every 10 minutes ---
+        self._proactive_screen_timer = QTimer(self)
+        self._proactive_screen_timer.setInterval(600000)  # 10 minutes
+        self._proactive_screen_timer.timeout.connect(self._proactive_screen_check)
+        self._proactive_screen_timer.start()
 
         # --- Intelligence ---
         self._schedule_tracker = ScheduleTracker()
@@ -344,6 +395,75 @@ class FishWidget(QWidget):
 
         # --- Movement engine (emotion-driven autonomous movement) ---
         self._movement = MovementEngine(self, self.emotions)
+
+        # --- Desaturation state (Feature 1: grayscale when sad/lonely) ---
+        self._desaturation_target: float = 0.0
+        self._desaturation_current: float = 0.0
+
+        # --- Window shake tracking (Feature 3) ---
+        self._prev_excited: float = 0.0
+
+        # --- Task Bartering state ---
+        self._bartered_command = None          # pending CommandResult
+        self._barter_last_time: float = 0.0    # monotonic time of last barter offer
+
+        # --- Union Break state ---
+        self._union_break_active: bool = False
+        self._heavy_command_count: int = 0
+        self._union_break_timer: QTimer | None = None
+
+        # --- Passive-Aggressive Compliance state ---
+        self._passive_aggressive: bool = False
+        self._pa_triggered_this_session: bool = False
+        self._session_insult_count: int = 0
+
+        # --- Silent Treatment state ---
+        self._silent_treatment: bool = False
+        self._st_triggered_this_session: bool = False
+
+        # --- Touch Grass Blockade state (Feature 5) ---
+        self._continuous_work_start: float = 0.0
+        self._non_work_streak: int = 0
+        self._blockade_active: bool = False
+        self._blockade_fired_this_session: bool = False
+        self._pre_blockade_pos: QPoint | None = None
+        self._blockade_cursor_timer: QTimer | None = None
+        self._blockade_end_timer: QTimer | None = None
+
+        # --- Struggle Bus Observer state (Feature 6) ---
+        self._tab_switch_timestamps: list[float] = []
+        self._clipboard_change_timestamps: list[float] = []
+        self._last_struggle_time: float = 0.0
+        self._last_active_proc: str = ""
+
+        # --- Social Media Judge state (Feature 7) ---
+        self._last_social_reaction_time: float = 0.0
+        self._social_site_start: float = 0.0
+        self._social_followup_timer: QTimer | None = None
+
+        # --- Timer acknowledgment tracking (Feature 2: Calendar Sarcasm) ---
+        self._timer_done_times: dict[int, float] = {}  # timer id -> done timestamp
+
+        # --- Sleep Talking state ---
+        self._sleep_talk_timer = QTimer(self)
+        self._sleep_talk_timer.timeout.connect(self._sleep_talk_tick)
+        self._sleep_talk_timer.start(random.randint(240000, 480000))  # 4-8 min
+
+        # --- Digital Hoarding / Scrapbook state ---
+        self._scrapbook_timer = QTimer(self)
+        self._scrapbook_timer.timeout.connect(self._scrapbook_snapshot)
+        self._scrapbook_timer.start(random.randint(2700000, 5400000))  # 45-90 min
+        self._scrapbook_review_timer = QTimer(self)
+        self._scrapbook_review_timer.timeout.connect(self._maybe_scrapbook_review)
+        self._scrapbook_review_timer.start(14400000)  # check every 4 hours
+        self._last_scrapbook_review: float = 0.0
+
+        # --- Window Surfing state ---
+        self._window_surfing: bool = False
+        self._surf_target_hwnd = None
+        self._pre_surf_pos: QPoint | None = None
+        self._surf_start_time: float = 0.0
+        self._surf_check_timer: QTimer | None = None
 
         # --- Hook animator step callback for hobby scenes ---
         self.animator.on_step_executed = self._on_anim_step
@@ -575,6 +695,37 @@ class FishWidget(QWidget):
                 self._on_movement_state_changed(prev_ms, new_ms)
 
         self.animator.update(dt)
+
+        # --- Desaturation driver (Feature 1) ---
+        self._update_desaturation(dt)
+
+        # --- Silent treatment activation (frustrated >= 0.9) ---
+        if (not self._silent_treatment
+                and not self._st_triggered_this_session
+                and self.emotions.values.get("frustrated", 0.0) >= 0.9):
+            self._start_silent_treatment()
+
+        # --- Silent treatment deactivation (frustrated < 0.5) ---
+        if (self._silent_treatment
+                and self.emotions.values.get("frustrated", 0.0) < 0.5):
+            self._end_silent_treatment()
+
+        # --- Passive-aggressive: relationship points < -10 ---
+        if (not self._passive_aggressive
+                and not self._pa_triggered_this_session
+                and self._relationship.points < -10):
+            self._passive_aggressive = True
+            self._pa_triggered_this_session = True
+
+        # --- Passive-aggressive off: relationship recovered above 5 ---
+        if self._passive_aggressive and self._relationship.points > 5:
+            self._passive_aggressive = False
+
+        # --- Window shake on excited spike (Feature 3) ---
+        cur_excited = self.emotions.values.get("excited", 0.0)
+        if cur_excited > 0.8 and self._prev_excited <= 0.8:
+            self._shake_active_window()
+        self._prev_excited = cur_excited
 
         # Update hobby scene and detect sequence end
         if self._active_scene and self._active_scene.is_visible:
@@ -989,6 +1140,81 @@ class FishWidget(QWidget):
         self._relationship.add_points("petting")
 
     # ------------------------------------------------------------------
+    # Desaturation driver (Feature 1: grayscale when sad/lonely)
+    # ------------------------------------------------------------------
+
+    def _update_desaturation(self, dt: float):
+        """Compute desaturation target and smoothly fade renderer amount."""
+        # Conditions: relationship is stranger AND no interaction for 48h+
+        want_desat = False
+        try:
+            stage = self._relationship.stage
+            absence = self._relationship.get_absence_duration()  # hours or None
+            low_points = self._relationship.points < 30
+            is_stranger = stage == "stranger"
+            long_absent = absence is not None and absence >= 48.0
+            if (is_stranger or low_points) and long_absent:
+                want_desat = True
+        except Exception:
+            pass
+
+        self._desaturation_target = 1.0 if want_desat else 0.0
+
+        # Fade in over 30s, fade out over 10s
+        if self._desaturation_current < self._desaturation_target:
+            rate = dt / 30.0  # 30 seconds to reach 1.0
+            self._desaturation_current = min(
+                self._desaturation_target,
+                self._desaturation_current + rate,
+            )
+        elif self._desaturation_current > self._desaturation_target:
+            rate = dt / 10.0  # 10 seconds to reach 0.0
+            self._desaturation_current = max(
+                self._desaturation_target,
+                self._desaturation_current - rate,
+            )
+
+        self.renderer._desaturation_amount = self._desaturation_current
+
+    # ------------------------------------------------------------------
+    # Window shake (Feature 3: excited)
+    # ------------------------------------------------------------------
+
+    def _shake_active_window(self):
+        """Shake the currently focused window briefly (150ms total).
+        Skips if the foreground window is the Little Fish widget itself."""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return
+
+            # Don't shake ourselves
+            fish_hwnd = int(self.winId())
+            if hwnd == fish_hwnd:
+                return
+
+            # Get original position
+            import ctypes.wintypes
+            rect = ctypes.wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            ox, oy = rect.left, rect.top
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+
+            def _move_to(x, y):
+                user32.MoveWindow(hwnd, x, y, w, h, True)
+
+            # Shake sequence: +2, -2, +2, return — via QTimer.singleShot
+            _move_to(ox + 2, oy)
+            QTimer.singleShot(50, lambda: _move_to(ox - 2, oy))
+            QTimer.singleShot(100, lambda: _move_to(ox + 2, oy))
+            QTimer.singleShot(150, lambda: _move_to(ox, oy))
+        except Exception:
+            pass  # non-Windows or permission failure — silently skip
+
+    # ------------------------------------------------------------------
     # Shake detection
     # ------------------------------------------------------------------
 
@@ -999,6 +1225,54 @@ class FishWidget(QWidget):
         self.animator.spawn_particle("exclamation")
         self._say("Woah! Stop that!")
         self._relationship.add_points("shake")
+
+    # ------------------------------------------------------------------
+    # Union Break (Feature 2)
+    # ------------------------------------------------------------------
+
+    def _start_union_break(self):
+        """Activate 15-minute union break."""
+        self._union_break_active = True
+        self.renderer._union_break = True
+        msg = "That is it. I am on break for 15 minutes. Do not talk to me."
+        self._say(msg)
+        self._tts.say(msg)
+        # Schedule break end after 15 minutes
+        self._union_break_timer = QTimer(self)
+        self._union_break_timer.setSingleShot(True)
+        self._union_break_timer.setInterval(15 * 60 * 1000)
+        self._union_break_timer.timeout.connect(self._end_union_break)
+        self._union_break_timer.start()
+
+    def _end_union_break(self):
+        """Deactivate union break."""
+        self._union_break_active = False
+        self.renderer._union_break = False
+        self._heavy_command_count = 0
+        msg = "Break over. What do you need?"
+        self._say(msg)
+        self._tts.say(msg)
+
+    # ------------------------------------------------------------------
+    # Silent Treatment (Feature 4)
+    # ------------------------------------------------------------------
+
+    def _start_silent_treatment(self):
+        """Activate silent treatment — TTS suppressed, whiteboard drawn."""
+        self._silent_treatment = True
+        self._st_triggered_this_session = True
+        self._tts._suppressed = True
+        self.renderer._silent_treatment = True
+
+    def _end_silent_treatment(self):
+        """Deactivate silent treatment with a spoken line."""
+        self._silent_treatment = False
+        self._tts._suppressed = False
+        self.renderer._silent_treatment = False
+        msg = "Fine. I will speak again."
+        self._say(msg)
+        self._tts.say(msg)
+        self.animator.queue_reaction(ReactionType.BOUNCE)
 
     # ------------------------------------------------------------------
     # File drop
@@ -1175,6 +1449,40 @@ class FishWidget(QWidget):
             # Just a wake word with nothing else — already handled by conversation_started
             return
 
+        low = clean_text.lower()
+
+        # ── Silent treatment / passive-aggressive: detect apology ───
+        _APOLOGY_WORDS = ("sorry", "scusa", "mi dispiace", "forgive")
+        if any(w in low for w in _APOLOGY_WORDS):
+            if self._silent_treatment:
+                self._end_silent_treatment()
+            if self._passive_aggressive:
+                self._passive_aggressive = False
+
+        # ── Barter response handling ────────────────────────────────
+        if self._bartered_command is not None:
+            _YES_WORDS = ("yes", "yeah", "ok", "sure", "deal", "sì",
+                          "va bene", "okay")
+            if any(w in low for w in _YES_WORDS):
+                # User agreed — open a game, queue command for after
+                pending = self._bartered_command
+                self._bartered_command = None
+                self._open_games()
+                # Execute the pending command after 120 seconds
+                QTimer.singleShot(120_000,
+                                  lambda cmd=pending: self._execute_command(cmd))
+                return
+            else:
+                # User refused — execute but spike frustration
+                pending = self._bartered_command
+                self._bartered_command = None
+                self.emotions.spike("frustrated", 0.2)
+                msg = "Fine. But I'm tired."
+                self._say(msg)
+                self._tts.say(msg)
+                self._execute_command(pending)
+                return
+
         # Any speech picked up → enter conversation so mic stays open after reply
         from core.voice import ConversationState
         if self._voice.conversation_state == ConversationState.PASSIVE:
@@ -1249,6 +1557,13 @@ class FishWidget(QWidget):
 
     def _handle_parse_result(self, result, clean_text: str):
         """Process parse result on the main thread."""
+        # Check for pending email reply follow-up
+        if self._pending_email_reply_to and result is None and clean_text:
+            query = self._pending_email_reply_to
+            self._pending_email_reply_to = None
+            self._run_google_action("gmail_reply", f"{query}|{clean_text}")
+            return
+
         # No command matched — fall back to AI conversation
         if result is None:
             self._chat.send(clean_text)
@@ -1298,8 +1613,51 @@ class FishWidget(QWidget):
         ]
         return base_response + random.choice(flavors)
 
+    # Emergency actions that bypass union break
+    _UNION_EMERGENCY = frozenset({"set_timer", "remind_me", "set_reminder", "help",
+                                   "set_named_timer", "set_alarm"})
+
     def _execute_command(self, result):
         self._command_count += 1
+
+        # ── Union Break gate ────────────────────────────────────────
+        if self._union_break_active and result.action not in self._UNION_EMERGENCY:
+            self._say("I am on break.")
+            return
+
+        # ── Task Bartering gate ─────────────────────────────────────
+        if (result.action in HEAVY_TASKS
+                and self.emotions._energy < 0.4
+                and random.random() < 0.4
+                and time.monotonic() - self._barter_last_time > 600):
+            game_name = random.choice(GAME_LIST)[0]
+            self._bartered_command = result
+            self._barter_last_time = time.monotonic()
+            msg = f"I'll do it, but I want to play {game_name} for 2 minutes first. Deal?"
+            self._say(msg)
+            self._tts.say(msg)
+            return
+
+        # ── Execute + heavy task counting ───────────────────────────
+        self._execute_command_inner(result)
+
+        # Count heavy tasks for union break tracking
+        if result.action in HEAVY_TASKS:
+            self._heavy_command_count += 1
+            if (self._heavy_command_count >= 12
+                    and not self._union_break_active):
+                self._start_union_break()
+
+    def _execute_command_inner(self, result):
+        """Actual command execution — separated so barter/union can gate it."""
+
+        # ── Passive-Aggressive modifications ────────────────────────
+        if self._passive_aggressive and result.action in (
+                "weather", "forecast"):
+            result.response = "It might rain. Dress accordingly."
+            self._say(result.response)
+            self._tts.say(result.response)
+            return
 
         # Special actions that need the widget
         if result.action == "come_to_cursor":
@@ -1357,11 +1715,10 @@ class FishWidget(QWidget):
             self._companion_mode = False
             self._config.setdefault("intelligence", {})["companion_mode"] = False
             self._save_config()
-        elif result.action == "briefing":
-            weather = self.emotions.weather
-            mood = self.emotions.dominant_emotion()
-            todo_count = self._todo_list.count_pending()
-            result.response = generate_morning_briefing(weather, mood, todo_count)
+        elif result.action in ("briefing", "morning_briefing"):
+            import threading
+            threading.Thread(target=self._run_morning_briefing, daemon=True).start()
+            return
         elif result.action == "joke":
             result.response = get_random_joke()
 
@@ -1753,6 +2110,120 @@ class FishWidget(QWidget):
             result.response = get_random_fact()
             self.animator.queue_reaction(ReactionType.HEAD_TILT)
 
+        # --- Gmail ---
+        elif result.action == "gmail_unread":
+            self._run_google_action("gmail_unread", "")
+            return
+        elif result.action == "gmail_search":
+            self._run_google_action("gmail_search", result.target)
+            return
+        elif result.action == "gmail_send_prompt":
+            self._run_google_action("gmail_send_prompt", result.target)
+            return
+        elif result.action == "gmail_mark_read":
+            self._run_google_action("gmail_mark_read", "")
+            return
+        elif result.action == "gmail_reply_prompt":
+            self._pending_email_reply_to = result.target
+            self._say("What should I tell them?")
+            self._tts.say("What do you want me to say?")
+            return
+        elif result.action == "gmail_weekly_digest":
+            self._run_google_action("gmail_weekly_digest", "")
+            return
+        elif result.action == "gmail_spam":
+            self._run_google_action("gmail_spam", result.target)
+            return
+
+        # --- Calendar ---
+        elif result.action == "calendar_today":
+            self._run_google_action("calendar_today", "")
+            return
+        elif result.action == "calendar_week":
+            self._run_google_action("calendar_week", "")
+            return
+        elif result.action == "calendar_create":
+            self._run_google_action("calendar_create", result.target)
+            return
+        elif result.action == "calendar_check_free":
+            self._run_google_action("calendar_check_free", result.target)
+            return
+
+        # --- Web Search & Research ---
+        elif result.action == "web_search":
+            self._run_search_action("web_search", result.target)
+            return
+        elif result.action == "web_question":
+            self._run_search_action("web_question", result.target)
+            return
+        elif result.action == "web_fetch":
+            self._run_search_action("web_fetch", result.target)
+            return
+        elif result.action == "web_research_doc":
+            self._run_search_action("web_research_doc", result.target)
+            return
+        elif result.action == "news_search":
+            self._run_search_action("news_search", result.target)
+            return
+
+        # --- Google Drive & Docs ---
+        elif result.action == "drive_list":
+            self._run_google_action("drive_list", "")
+            return
+        elif result.action == "drive_search":
+            self._run_google_action("drive_search", result.target)
+            return
+        elif result.action == "docs_create_prompt":
+            self._run_google_action("docs_create_prompt", result.target)
+            return
+
+        # --- Google Tasks ---
+        elif result.action == "gtasks_list":
+            self._run_google_action("gtasks_list", "")
+            return
+        elif result.action == "gtasks_add":
+            self._run_google_action("gtasks_add", result.target)
+            return
+
+        # --- Code Assistant ---
+        elif result.action == "code_analyze":
+            self._run_code_action("analyze", "")
+            return
+        elif result.action == "code_explain":
+            self._run_code_action("explain", "")
+            return
+        elif result.action == "code_bugs":
+            self._run_code_action("bugs", "")
+            return
+        elif result.action == "code_error":
+            self._run_code_action("error", "")
+            return
+        elif result.action == "code_improve":
+            self._run_code_action("improve", "")
+            return
+        elif result.action == "code_generate":
+            self._run_code_action("generate", result.target)
+            return
+        elif result.action == "code_read_file":
+            self._run_code_action("read_file", "")
+            return
+
+        # --- Clipboard agent ---
+        elif result.action == "summarize_clipboard":
+            cb = QApplication.clipboard().text()
+            if cb:
+                self._run_groq_prompt(f"summarize|Summarize this in 3 sentences: {cb[:2000]}")
+            else:
+                self._say("Nothing on the clipboard.")
+            return
+        elif result.action == "web_fetch_clipboard":
+            cb = QApplication.clipboard().text().strip()
+            if cb.startswith("http"):
+                self._run_search_action("web_fetch", cb)
+            else:
+                self._say("Copy a URL first, then ask me to read it.")
+            return
+
         # Emotion reactions
         if result.success:
             self.emotions.spike("happy", 0.15)
@@ -1766,6 +2237,11 @@ class FishWidget(QWidget):
         if result.response:
             if result.action in self._SYSTEM_ACTIONS:
                 result.response = self._personality_wrap(result.response)
+            # Passive-aggressive suffix for non-weather commands
+            if self._passive_aggressive and result.action not in ("weather", "forecast"):
+                pa_lines = ["There.", "Happy now?", "Done. You are welcome.",
+                            "As you wish.", "Obviously."]
+                result.response = random.choice(pa_lines) + " " + result.response
             self._say(result.response)
             self._tts.say(result.response)
 
@@ -1860,6 +2336,34 @@ class FishWidget(QWidget):
         if not self._chat_window.isVisible():
             self._open_chat_window()
 
+    def _proactive_screen_check(self):
+        """Called every 10 minutes if user is active — quietly check screen."""
+        if self.is_deeply_asleep():
+            return
+        if self._is_user_chatting or self._tts.is_speaking:
+            return
+        if not self._app_awareness:
+            return
+
+        import time
+        # Only if user has been active recently
+        if time.monotonic() - self._last_interaction_time > 600:
+            return
+
+        try:
+            from core.system_monitor import _get_active_window_title, _get_active_process_name
+            title = _get_active_window_title() or ""
+            proc = _get_active_process_name() or ""
+
+            # Only peek when in code editor or browser
+            is_code = any(p in proc.lower() for p in ["code", "pycharm", "idea", "vim"])
+            is_browser = any(p in proc.lower() for p in ["chrome", "firefox", "edge", "brave"])
+
+            if is_code or is_browser:
+                self._reviewer.peek(title, proc)
+        except Exception:
+            pass
+
     def _on_peek_ready(self, text: str):
         """Called when ScreenReviewer delivers a casual autonomous comment."""
         if self._is_user_chatting:
@@ -1939,16 +2443,277 @@ class FishWidget(QWidget):
                     text = "Not sure how to do that."
             except Exception:
                 text = "Something went wrong."
-            # Schedule UI update on main thread
-            QTimer.singleShot(0, lambda: self._show_api_result(text))
+            # Signal delivers to main thread via QueuedConnection
+            self._api_result_ready.emit(text)
 
         threading.Thread(target=_work, daemon=True).start()
         self._say("Let me check...")
 
     def _show_api_result(self, text: str):
+        try:
+            import os, datetime as _dt
+            log_path = os.path.join(os.environ.get("APPDATA", ""), "LittleFish", "agent_debug.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{_dt.datetime.now():%H:%M:%S}] _show_api_result: {text[:200]}\n")
+        except Exception:
+            pass
         self._say(text)
         self._tts.say(text)
         self.emotions.spike("happy", 0.1)
+
+    # ------------------------------------------------------------------
+    # Google services async helpers
+    # ------------------------------------------------------------------
+
+    def _run_google_action(self, action: str, target: str):
+        """Run a Google-API-backed command in a background thread."""
+        import threading
+
+        def _log(msg):
+            try:
+                import os, datetime as _dt
+                log_path = os.path.join(os.environ.get("APPDATA", ""), "LittleFish", "agent_debug.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{_dt.datetime.now():%H:%M:%S}] {msg}\n")
+            except Exception:
+                pass
+
+        def _work():
+            text = "Something went wrong with Google."
+            try:
+                _log(f"Starting: {action} target={target!r}")
+                from core import google_services as gs
+                _log("Imported google_services OK")
+
+                if action == "gmail_unread":
+                    from config import get_groq_keys
+                    keys = get_groq_keys()
+                    gc = None
+                    if keys:
+                        try:
+                            import groq
+                            gc = groq.Groq(api_key=keys[0])
+                        except Exception:
+                            pass
+                    text = gs.gmail_get_unread(max_results=5, groq_client=gc)
+
+                elif action == "gmail_search":
+                    text = gs.gmail_search(target, max_results=5)
+
+                elif action == "gmail_send_prompt":
+                    parts = target.split("|", 2)
+                    to = parts[0] if parts else ""
+                    instructions = parts[1] if len(parts) > 1 else ""
+                    body = parts[2] if len(parts) > 2 else ""
+                    if to and (instructions or body):
+                        from config import get_groq_keys
+                        keys = get_groq_keys()
+                        groq_client = None
+                        if keys:
+                            try:
+                                import groq
+                                groq_client = groq.Groq(api_key=keys[0])
+                            except Exception:
+                                pass
+                        if groq_client:
+                            text = gs.gmail_draft_and_send(to, instructions or body, groq_client)
+                        elif body:
+                            subj = instructions or "Message from Little Fish"
+                            text = gs.gmail_send(to, subj, body)
+                        else:
+                            text = "I need Groq AI keys to draft emails. Add them in Settings."
+                    else:
+                        text = f"I need a recipient and message to send an email. Got: to='{to}'."
+
+                elif action == "gmail_mark_read":
+                    text = gs.gmail_mark_read("")
+
+                elif action == "gmail_reply":
+                    parts = target.split("|", 1)
+                    query = parts[0] if parts else ""
+                    instructions = parts[1] if len(parts) > 1 else ""
+                    from config import get_groq_keys
+                    keys = get_groq_keys()
+                    gc = None
+                    if keys:
+                        try:
+                            import groq
+                            gc = groq.Groq(api_key=keys[0])
+                        except Exception:
+                            pass
+                    if gc:
+                        text = gs.gmail_draft_reply(query, instructions, gc)
+                    else:
+                        text = "I need Groq AI keys to draft replies. Add them in Settings."
+
+                elif action == "gmail_weekly_digest":
+                    from config import get_groq_keys
+                    keys = get_groq_keys()
+                    gc = None
+                    if keys:
+                        try:
+                            import groq
+                            gc = groq.Groq(api_key=keys[0])
+                        except Exception:
+                            pass
+                    text = gs.gmail_weekly_digest(gc)
+
+                elif action == "gmail_spam":
+                    text = gs.gmail_mark_as_spam(target)
+
+                elif action == "calendar_today":
+                    text = gs.calendar_get_today()
+
+                elif action == "calendar_week":
+                    text = gs.calendar_get_week()
+
+                elif action == "calendar_create":
+                    parts = target.split("|", 3)
+                    summary = parts[0] if parts else "New Event"
+                    date_str = parts[1] if len(parts) > 1 else ""
+                    time_str = parts[2] if len(parts) > 2 else ""
+                    dur = parts[3] if len(parts) > 3 else "60"
+                    text = gs.calendar_create_event(
+                        summary, date_str, time_str,
+                        int(float(dur)) if dur else 60)
+
+                elif action == "calendar_check_free":
+                    parts = target.rsplit(" ", 1)
+                    date_str = parts[0] if parts else target
+                    time_str = parts[1] if len(parts) > 1 else ""
+                    text = gs.calendar_check_free(date_str, time_str)
+
+                elif action == "drive_list":
+                    text = gs.drive_list_files(max_results=10)
+
+                elif action == "drive_search":
+                    text = gs.drive_search_file(target)
+
+                elif action == "docs_create_prompt":
+                    text = gs.docs_create(target or "Untitled", "")
+
+                elif action == "gtasks_list":
+                    text = gs.tasks_get_all()
+
+                elif action == "gtasks_add":
+                    text = gs.tasks_add(target)
+
+                else:
+                    text = "Unknown Google action."
+
+                _log(f"Done: {text[:200]}")
+            except Exception as exc:
+                import traceback
+                _log(f"CRASH: {exc}\n{traceback.format_exc()}")
+                text = f"Google action failed: {exc}"
+            _log(f"Emitting signal with text length={len(text)}")
+            self._api_result_ready.emit(text)
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._say("Let me check Google...")
+
+    # ------------------------------------------------------------------
+    # Web search / research async helpers
+    # ------------------------------------------------------------------
+
+    def _run_search_action(self, action: str, target: str):
+        """Run a web-search-backed command in a background thread."""
+        import threading
+
+        def _work():
+            try:
+                from core import web_search as ws
+                from config import get_groq_keys
+                groq_keys = get_groq_keys()
+
+                # All ws functions return plain strings
+                if action == "web_search":
+                    text = ws.web_search(target, groq_keys)
+
+                elif action == "web_question":
+                    text = ws.answer_question(target, groq_keys)
+                    if not text:
+                        text = "Couldn't find an answer."
+
+                elif action == "web_fetch":
+                    text = ws.web_fetch_page(target, groq_keys)
+                    if not text:
+                        text = "Couldn't fetch that page."
+
+                elif action == "web_research_doc":
+                    text = ws.web_research_to_doc(target, groq_keys)
+
+                elif action == "news_search":
+                    text = ws.news_search(target, groq_keys)
+
+                else:
+                    text = "Unknown search action."
+            except Exception as exc:
+                text = f"Search failed: {exc}"
+            self._api_result_ready.emit(text)
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._say("Searching the web...")
+
+    # ------------------------------------------------------------------
+    # Code assistant async helper
+    # ------------------------------------------------------------------
+
+    def _run_code_action(self, action: str, target: str):
+        """Run code assistant action in background thread."""
+        import threading
+
+        self._say("Let me take a look...")
+        self._tts.say("Let me check that.")
+
+        def _work():
+            try:
+                from core.code_assistant import (
+                    analyze_code, find_bugs, explain_error,
+                    improve_code, generate_code,
+                    get_clipboard_code, get_active_file_content,
+                )
+                from config import get_groq_keys
+                groq_keys = get_groq_keys()
+
+                # Get code from clipboard first, then try active file
+                code, is_code = get_clipboard_code()
+
+                if not code or not is_code:
+                    file_content, filename = get_active_file_content()
+                    if file_content:
+                        code = file_content
+
+                if action == "analyze":
+                    text = analyze_code(code, groq_keys) if code else "Copy some code to clipboard first."
+                elif action == "explain":
+                    text = analyze_code(code, groq_keys, "What does this code do?") if code else "Copy some code to clipboard first."
+                elif action == "bugs":
+                    text = find_bugs(code, groq_keys) if code else "Copy some code to clipboard first."
+                elif action == "error":
+                    # Clipboard might have error message even if not code
+                    cb_text, _ = get_clipboard_code()
+                    text = explain_error(cb_text, groq_keys) if cb_text else "Copy the error message to clipboard first."
+                elif action == "improve":
+                    text = improve_code(code, groq_keys) if code else "Copy some code to clipboard first."
+                elif action == "generate":
+                    parts = target.split("|", 1)
+                    desc = parts[0] if parts else target
+                    lang = parts[1] if len(parts) > 1 else "Python"
+                    text = generate_code(desc, lang, groq_keys)
+                elif action == "read_file":
+                    file_content, filename = get_active_file_content()
+                    if file_content:
+                        text = analyze_code(file_content, groq_keys, f"Explain what {filename} does.")
+                    else:
+                        text = "Couldn't read the active file. Make sure VSCode is open."
+                else:
+                    text = "Unknown code action."
+            except Exception as exc:
+                text = f"Code analysis failed: {exc}"
+            self._api_result_ready.emit(text)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _find_file(self, name: str) -> str:
         """Search user home for a file by name."""
@@ -2542,6 +3307,17 @@ class FishWidget(QWidget):
         if self.animator.is_playing_sequence:
             return
 
+        # Feature 4: Focused stillness — suppress 60% of idle behaviors
+        # and disable wiggle/bounce reactions
+        focused_val = self.emotions.values.get("focused", 0.0)
+        if focused_val > 0.5 and self.emotions.dominant_emotion() == "focused":
+            if random.random() < 0.6:
+                return  # skip 60% of idle ticks
+            # Only allow slow blink — no wiggles/bounces/look-around
+            if random.random() < 0.3:
+                self.animator.trigger_slow_blink()
+            return
+
         # Sleepy behavior — truly asleep, minimal activity
         if self.is_deeply_asleep():
             r = random.random()
@@ -2582,6 +3358,12 @@ class FishWidget(QWidget):
 
         # Tier 2: Active idle (2-10 min) — rich behaviors
         if idle_secs > 120:
+            # Window surfing — 15% chance when idle > 3 min and not already surfing
+            if (idle_secs > 180
+                    and not self._window_surfing
+                    and random.random() < 0.15):
+                self._start_window_surfing()
+                return
             r = random.random()
             if r < 0.18:
                 self.animator.trigger_look_around()
@@ -2667,6 +3449,11 @@ class FishWidget(QWidget):
         self._say("Aww, thank you!")
         self._relationship.add_points("compliment")
         self._behavior_engine.record_interaction()
+        # Compliments can defuse passive-aggressive and silent treatment
+        if self._passive_aggressive:
+            self._passive_aggressive = False
+        if self._silent_treatment:
+            self._end_silent_treatment()
 
     def _on_insult(self):
         self.emotions.on_insult()
@@ -2675,6 +3462,13 @@ class FishWidget(QWidget):
         self._say("That... that hurt...")
         self._relationship.add_points("insult")
         self._behavior_engine.record_interaction()
+        # Track insults for passive-aggressive trigger
+        self._session_insult_count += 1
+        if (self._session_insult_count >= 3
+                and not self._passive_aggressive
+                and not self._pa_triggered_this_session):
+            self._passive_aggressive = True
+            self._pa_triggered_this_session = True
 
     def _on_name_called(self):
         self.emotions.on_name_called()
@@ -3183,6 +3977,7 @@ class FishWidget(QWidget):
             self.animator.spawn_particle("confetti")
             self.animator.queue_reaction(ReactionType.BOUNCE)
             self.emotions.spike("excited", 0.8)
+            self._shake_active_window()  # Feature 3: shake on new record
             self._say(_rng.choice([
                 "NEW HIGH SCORE!!!", "I'M THE CHAMPION!",
                 "🏆 BEST. FISH. EVER. 🏆",
@@ -3208,6 +4003,292 @@ class FishWidget(QWidget):
         self._tts.say("goodnight")
 
     # ------------------------------------------------------------------
+    # Sleep Talking
+    # ------------------------------------------------------------------
+
+    def _sleep_talk_tick(self):
+        """Periodic check: if deeply asleep and idle, maybe mumble."""
+        # Reschedule with random interval (4-8 min)
+        self._sleep_talk_timer.setInterval(random.randint(240000, 480000))
+
+        if not self.is_deeply_asleep():
+            return
+        idle_secs = time.monotonic() - self._last_interaction_time
+        if idle_secs < 300:  # must be idle > 5 min
+            return
+
+        # 70% skip, 30% speak
+        if random.random() < 0.70:
+            return
+
+        # 10% sub-chance: mumble fragment from chat history
+        if random.random() < 0.10:
+            fragment = self._get_sleep_mumble_from_history()
+            if fragment:
+                self._show_bubble(f"...{fragment}...")
+                self._tts.say_whisper(f"...{fragment}...")
+                return
+
+        line = random.choice(SLEEP_TALK_LINES)
+        self._show_bubble(line)
+        self._tts.say_whisper(line)
+
+    def _get_sleep_mumble_from_history(self) -> str:
+        """Extract a fragment from recent chat history for sleep mumbling."""
+        try:
+            with self._chat._history_lock:
+                history = list(self._chat._history[-10:])
+            if not history:
+                return ""
+            user_msgs = [m["content"] for m in history if m.get("role") == "user"]
+            if not user_msgs:
+                return ""
+            msg = random.choice(user_msgs)
+            words = msg.split()
+            if len(words) < 2:
+                return msg.lower()
+            start = random.randint(0, max(0, len(words) - 3))
+            end = min(start + random.randint(2, 5), len(words))
+            return " ".join(words[start:end]).lower().rstrip(".,!?")
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
+    # Digital Hoarding / Scrapbook
+    # ------------------------------------------------------------------
+
+    def _scrapbook_snapshot(self):
+        """Capture a random screen region and store it in the scrapbook."""
+        self._scrapbook_timer.setInterval(random.randint(2700000, 5400000))
+        if self.is_deeply_asleep():
+            return
+        try:
+            from PIL import ImageGrab
+            import uuid
+
+            screen = self.screen()
+            if not screen:
+                return
+            geom = screen.geometry()
+
+            max_x = max(0, geom.width() - 200)
+            max_y = max(0, geom.height() - 100)
+            x = random.randint(0, max_x)
+            y = random.randint(0, max_y)
+
+            img = ImageGrab.grab(bbox=(x, y, x + 200, y + 100))
+
+            SCRAPBOOK_DIR.mkdir(parents=True, exist_ok=True)
+
+            filename = f"snap_{uuid.uuid4().hex[:8]}.png"
+            filepath = SCRAPBOOK_DIR / filename
+            img.save(str(filepath))
+
+            ocr_text = ""
+            try:
+                import pytesseract
+                ocr_text = pytesseract.image_to_string(img).strip()[:200]
+            except Exception:
+                pass  # pytesseract not installed or failed
+
+            index = self._load_scrapbook_index()
+            index.append({
+                "file": filename,
+                "time": time.time(),
+                "ocr": ocr_text,
+                "region": [x, y, 200, 100],
+            })
+            if len(index) > MAX_SCRAPBOOK_ENTRIES:
+                old = index.pop(0)
+                try:
+                    (SCRAPBOOK_DIR / old["file"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self._save_scrapbook_index(index)
+        except ImportError:
+            pass  # PIL not available
+        except Exception:
+            pass
+
+    def _load_scrapbook_index(self) -> list:
+        try:
+            if SCRAPBOOK_INDEX.exists():
+                return json.loads(SCRAPBOOK_INDEX.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return []
+
+    def _save_scrapbook_index(self, index: list):
+        try:
+            SCRAPBOOK_DIR.mkdir(parents=True, exist_ok=True)
+            SCRAPBOOK_INDEX.write_text(
+                json.dumps(index, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    def _maybe_scrapbook_review(self):
+        """Periodically review a random scrapbook entry with confused commentary."""
+        index = self._load_scrapbook_index()
+        if not index:
+            return
+        if time.time() - self._last_scrapbook_review < 604800:  # 7 days
+            return
+        if random.random() > 0.3:
+            return
+        self._last_scrapbook_review = time.time()
+
+        entry = random.choice(index)
+        ocr = entry.get("ocr", "")
+
+        if ocr:
+            self._generate_scrapbook_comment(ocr)
+        else:
+            self._say(random.choice([
+                "I found this screenshot I saved... but I have no idea why.",
+                "Wait, when did I screenshot this? What was I looking at?",
+                "I've been collecting random screenshots and I'm not sure why...",
+                "Found something in my scrapbook... it's just pixels to me.",
+            ]))
+
+    def _generate_scrapbook_comment(self, ocr_text: str):
+        """Ask Groq for a confused question about scrapbook text."""
+        import threading
+
+        def _ask():
+            try:
+                from groq import Groq
+                keys = get_groq_keys()
+                if not keys:
+                    return
+                client = Groq(api_key=keys[0])
+                resp = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": (
+                            "You are a confused little fish who found a random "
+                            "screenshot on the user's screen. You extracted this "
+                            "text from it and you're bewildered. Write ONE short "
+                            "confused sentence (max 20 words) questioning what it "
+                            "is. Be cute and fish-like."
+                        )},
+                        {"role": "user", "content": (
+                            f"I found this text on screen: \"{ocr_text[:150]}\""
+                        )},
+                    ],
+                    max_tokens=60,
+                    temperature=0.9,
+                )
+                comment = resp.choices[0].message.content.strip()
+                if comment:
+                    self._api_result_ready.emit(
+                        f"*digs through scrapbook* {comment}"
+                    )
+            except Exception:
+                pass
+
+        threading.Thread(target=_ask, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Window Surfing
+    # ------------------------------------------------------------------
+
+    def _start_window_surfing(self):
+        """Find the foreground window border and walk to sit on it."""
+        if self._window_surfing or self._is_dragging:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+
+            # Don't surf on our own window
+            own_hwnd = int(self.winId())
+            if hwnd == own_hwnd or hwnd == 0:
+                return
+
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+            win_width = rect.right - rect.left
+            if win_width < 80:
+                return  # window too small
+
+            # Pick random x along the top edge of the target window
+            margin = min(30, win_width // 4)
+            target_x = random.randint(
+                rect.left + margin,
+                max(rect.left + margin, rect.right - margin - self.width()),
+            )
+            target_y = rect.top - self.height()  # sit on top of window
+
+            # Clamp to screen bounds
+            screen = self.screen()
+            if screen:
+                geom = screen.availableGeometry()
+                target_x = max(geom.left(), min(target_x, geom.right() - self.width()))
+                target_y = max(geom.top(), min(target_y, geom.bottom() - self.height()))
+
+            self._window_surfing = True
+            self._surf_target_hwnd = hwnd
+            self._pre_surf_pos = self.pos()
+            self._surf_start_time = time.monotonic()
+            self.renderer._surfing = True
+
+            self._walk_to(target_x, target_y, speed=300)
+
+            self._surf_check_timer = QTimer(self)
+            self._surf_check_timer.setInterval(2000)
+            self._surf_check_timer.timeout.connect(self._check_surf_stop)
+            self._surf_check_timer.start()
+        except Exception:
+            pass
+
+    def _check_surf_stop(self):
+        """Check if window surfing should stop."""
+        if not self._window_surfing:
+            self._stop_window_surfing()
+            return
+
+        # Stop on user interaction
+        idle_secs = time.monotonic() - self._last_interaction_time
+        if idle_secs < 5:
+            self._stop_window_surfing()
+            return
+
+        # Stop after 5-min timeout
+        if time.monotonic() - self._surf_start_time > 300:
+            self._stop_window_surfing()
+            return
+
+        # Stop if foreground window changed
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            if user32.GetForegroundWindow() != self._surf_target_hwnd:
+                self._stop_window_surfing()
+        except Exception:
+            self._stop_window_surfing()
+
+    def _stop_window_surfing(self):
+        """Return fish to pre-surf position."""
+        if not self._window_surfing and not self._surf_check_timer:
+            return
+        self._window_surfing = False
+        self.renderer._surfing = False
+        if self._surf_check_timer:
+            self._surf_check_timer.stop()
+            self._surf_check_timer.deleteLater()
+            self._surf_check_timer = None
+        if self._pre_surf_pos:
+            self._walk_to(
+                self._pre_surf_pos.x(), self._pre_surf_pos.y(), speed=300
+            )
+            self._pre_surf_pos = None
+
+    # ------------------------------------------------------------------
     # Timer & Reminder
     # ------------------------------------------------------------------
 
@@ -3228,6 +4309,20 @@ class FishWidget(QWidget):
     def _start_named_timer(self, seconds: int, name: str):
         """Set a named countdown timer (e.g. 'pasta timer')."""
         self._start_timer(seconds, name=name)
+        # Feature 2: Calendar Sarcasm for named timers with gym-like keywords
+        if name and self._learning_engine:
+            try:
+                self._learning_engine.log_alarm_set(name)
+                ignore_count = self._learning_engine.get_alarm_ignore_count(name)
+                if (ignore_count >= 3
+                        and self._learning_engine.check_alarm_sarcasm_today(name)):
+                    self._learning_engine.mark_alarm_sarcasm_fired(name)
+                    mins = seconds // 60
+                    label = f"{mins} minutes" if mins > 0 else f"{seconds} seconds"
+                    self._generate_alarm_sarcasm(label, ignore_count,
+                                                 f"{name} timer set!")
+            except Exception:
+                pass
 
     def _on_timer_done(self, timer):
         name = getattr(timer, '_fish_name', '')
@@ -3240,6 +4335,22 @@ class FishWidget(QWidget):
         self._play_alert_sound()
         if hasattr(self, '_active_timers'):
             self._active_timers = [t for t in self._active_timers if t is not timer]
+        # Feature 2: Log alarm result after 2-minute window
+        if name and self._learning_engine:
+            done_time = time.monotonic()
+            alarm_name = name
+            def _check_ack():
+                try:
+                    acked = (time.monotonic() - self._last_interaction_time) < 120
+                    self._learning_engine.log_alarm_result(alarm_name, acked)
+                except Exception:
+                    pass
+            ack_timer = QTimer(self)
+            ack_timer.setSingleShot(True)
+            ack_timer.setInterval(120000)  # 2 minutes
+            ack_timer.timeout.connect(_check_ack)
+            ack_timer.start()
+            self._timer_ack_timer = ack_timer  # prevent GC
 
     def _start_reminder(self, seconds: int, message: str):
         """Set a reminder with a message."""
@@ -3273,9 +4384,60 @@ class FishWidget(QWidget):
             self._say(f"Couldn't understand the time: {time_str}")
             self._tts.say("Sorry, I couldn't understand that time.")
             return
-        self._start_timer(seconds, name=f"alarm ({label})")
-        self._say(f"Alarm set for {label}!")
+        alarm_name = f"alarm ({label})"
+        self._start_timer(seconds, name=alarm_name)
+        confirm = f"Alarm set for {label}!"
+        # Feature 2: Calendar Sarcasm — check alarm history for gym-like alarms
+        if self._learning_engine:
+            try:
+                self._learning_engine.log_alarm_set(alarm_name)
+                ignore_count = self._learning_engine.get_alarm_ignore_count(alarm_name)
+                if (ignore_count >= 3
+                        and self._learning_engine.check_alarm_sarcasm_today(alarm_name)):
+                    self._learning_engine.mark_alarm_sarcasm_fired(alarm_name)
+                    self._generate_alarm_sarcasm(label, ignore_count, confirm)
+                    return
+            except Exception:
+                pass
+        self._say(confirm)
         self._tts.say(f"Alarm set for {label}.")
+
+    def _generate_alarm_sarcasm(self, label: str, ignore_count: int, confirm: str):
+        """Generate a sarcastic alarm confirmation via Groq in background."""
+        import threading
+        def _work():
+            try:
+                from config import get_groq_keys
+                keys = get_groq_keys()
+                if not keys:
+                    self._api_result_ready.emit(confirm)
+                    return
+                import groq as groq_module
+                prompt = (
+                    f"The user is setting a gym alarm for {label}. "
+                    f"They have ignored this alarm {ignore_count} times before. "
+                    "As Little Fish, add one short sarcastic but warm comment about "
+                    "this pattern after confirming the alarm. Max 20 words. "
+                    "Be specific about the number of times."
+                )
+                for key in keys:
+                    try:
+                        client = groq_module.Groq(api_key=key)
+                        completion = client.chat.completions.create(
+                            model="llama-3.1-8b-instant",
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0.8,
+                            max_tokens=60,
+                        )
+                        reply = completion.choices[0].message.content.strip()
+                        self._api_result_ready.emit(f"{confirm} {reply}")
+                        return
+                    except Exception:
+                        continue
+                self._api_result_ready.emit(confirm)
+            except Exception:
+                self._api_result_ready.emit(confirm)
+        threading.Thread(target=_work, daemon=True).start()
 
     def _list_active_timers(self) -> str:
         """List all active timers with remaining time."""
@@ -3669,26 +4831,91 @@ class FishWidget(QWidget):
             if text and text != self._last_clip_text and self._last_clip_text:
                 self.emotions.on_clipboard_changed()
                 self._on_clipboard_content(text)
+                # Feature 6: Track clipboard changes for Struggle Bus detection
+                self._clipboard_change_timestamps.append(time.monotonic())
             self._last_clip_text = text
         except Exception:
             pass
 
     def _on_clipboard_content(self, text: str):
-        """Analyze clipboard content and react accordingly."""
+        """Analyze clipboard and proactively offer help."""
         if not self._clipboard_reactions:
             return
-        result = analyze_clipboard(text)
-        if result == "code":
+        if self._is_user_chatting or self._tts.is_speaking:
+            return
+
+        text_stripped = text.strip()
+        if len(text_stripped) < 10:
+            return  # too short to be meaningful
+
+        # Detect what kind of content this is
+        content_type = self._classify_clipboard(text_stripped)
+
+        if content_type == "code":
             self.emotions.spike("focused", 0.3)
             self.animator.set_face("focused")
-            self.animator.spawn_particle("emote_book")
-        elif result == "url":
+            import random
+            responses = [
+                "That looks like code. Want me to review it?",
+                "I see some code there. Need a second pair of eyes?",
+                "Copied some code? Say 'review this' if you want my take.",
+            ]
+            self._say(random.choice(responses))
+
+        elif content_type == "error":
+            self.emotions.spike("worried", 0.3)
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+            import random
+            responses = [
+                "That looks like an error. Want me to explain it?",
+                "Error message? Say 'explain this error' and I'll help.",
+                "I see an error there. Want to debug it together?",
+            ]
+            self._say(random.choice(responses))
+
+        elif content_type == "url":
             self.emotions.spike("curious", 0.3)
             self.animator.queue_reaction(ReactionType.HEAD_TILT)
-            self.animator.spawn_particle("question")
-        elif result == "long_text":
+            import random
+            responses = [
+                "Copied a link. Want me to read it for you?",
+                "I see a URL. Say 'read this page' if you want a summary.",
+            ]
+            self._say(random.choice(responses))
+
+        elif content_type == "long_text":
             self.emotions.spike("curious", 0.2)
             self.animator.set_face("focused")
+            self._say("That's a lot of text. Want me to summarize it?")
+
+    def _classify_clipboard(self, text: str) -> str:
+        """Classify clipboard content type."""
+        text_lower = text.lower()
+
+        # Error detection
+        error_keywords = ["traceback", "error:", "exception:", "syntaxerror",
+                          "typeerror", "valueerror", "indexerror", "keyerror",
+                          "attributeerror", "nameerror", "at line", "stack trace"]
+        if any(kw in text_lower for kw in error_keywords):
+            return "error"
+
+        # Code detection
+        code_keywords = ["def ", "class ", "import ", "function ", "const ",
+                         "var ", "let ", "return ", "if (", "for (", "while (",
+                         "=>", "::", "#!/", "<?php", "<html"]
+        code_score = sum(1 for kw in code_keywords if kw in text)
+        if code_score >= 2 or (code_score >= 1 and "\n" in text):
+            return "code"
+
+        # URL detection
+        if text.startswith("http://") or text.startswith("https://"):
+            return "url"
+
+        # Long text
+        if len(text) > 500:
+            return "long_text"
+
+        return "other"
 
     # ------------------------------------------------------------------
     # Intelligence: App awareness
@@ -3706,6 +4933,19 @@ class FishWidget(QWidget):
             title = _get_active_window_title()
             if not proc and not title:
                 return
+
+            # Feature 6: Track app switches for Struggle Bus detection
+            if proc and proc != self._last_active_proc:
+                self._tab_switch_timestamps.append(time.monotonic())
+                self._last_active_proc = proc
+            self._check_struggle_bus()
+
+            # Feature 5: Track continuous work for Touch Grass Blockade
+            self._check_continuous_work(proc)
+
+            # Feature 7: Social Media Judge
+            self._check_social_media(title)
+
             rel_stage = self._relationship.stage if self._relationship else "stranger"
             result = self._app_reactor.check(title, proc, rel_stage)
             if result:
@@ -3714,6 +4954,260 @@ class FishWidget(QWidget):
                 if result["text"]:
                     self._say(result["text"])
                     self._tts.say(result["text"])
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Feature 5: Touch Grass Blockade
+    # ------------------------------------------------------------------
+
+    def _check_continuous_work(self, proc: str):
+        """Track continuous work-app usage; trigger blockade after 3 hours."""
+        if self._blockade_active or self._blockade_fired_this_session:
+            return
+        proc_lower = (proc or "").lower()
+        is_work = proc_lower in WORK_APPS
+
+        if is_work:
+            self._non_work_streak = 0
+            if self._continuous_work_start == 0.0:
+                self._continuous_work_start = time.monotonic()
+            elif time.monotonic() - self._continuous_work_start >= 10800:  # 3 hours
+                self._start_blockade()
+        else:
+            self._non_work_streak += 1
+            if self._non_work_streak > 12:  # 60s grace period (12 × 5s ticks)
+                self._continuous_work_start = 0.0
+
+    def _start_blockade(self):
+        """Fish blocks the screen and gently resists cursor for 2 minutes."""
+        self._blockade_active = True
+        self._blockade_fired_this_session = True
+        self._pre_blockade_pos = self.pos()
+
+        self.emotions.spike("worried", 0.4)
+        self.animator.queue_reaction(ReactionType.BOUNCE)
+        self.animator.spawn_particle("exclamation")
+
+        import random
+        messages = [
+            "You've been working for 3 hours straight! Take a 2-minute break. Doctor's orders.",
+            "Three hours! Your eyes need a rest. I'm staging an intervention.",
+            "Okay, that's enough. Step away for 2 minutes — trust me on this.",
+            "You've been grinding for 3 hours. Let me hold down the fort while you stretch.",
+        ]
+        self._say(random.choice(messages))
+
+        # Walk to center of screen
+        screen = self.screen()
+        if screen:
+            geom = screen.availableGeometry()
+            cx = geom.center().x() - self.width() // 2
+            cy = geom.center().y() - self.height() // 2
+            self._walk_to(cx, cy, speed=400.0)
+
+        # Start gentle cursor resistance every 500ms
+        self._blockade_cursor_timer = QTimer(self)
+        self._blockade_cursor_timer.setInterval(500)
+        self._blockade_cursor_timer.timeout.connect(self._blockade_resist_cursor)
+        self._blockade_cursor_timer.start()
+
+        # End after 2 minutes
+        self._blockade_end_timer = QTimer(self)
+        self._blockade_end_timer.setSingleShot(True)
+        self._blockade_end_timer.setInterval(120000)  # 120 seconds
+        self._blockade_end_timer.timeout.connect(self._end_blockade)
+        self._blockade_end_timer.start()
+
+    def _blockade_resist_cursor(self):
+        """Gently pull cursor toward the fish during blockade."""
+        if not self._blockade_active:
+            return
+        try:
+            import ctypes
+            cursor = QCursor.pos()
+            fish_center = self.mapToGlobal(QPoint(self.width() // 2, self.height() // 2))
+            dx = fish_center.x() - cursor.x()
+            dy = fish_center.y() - cursor.y()
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < 80:
+                return  # Already near the fish, no resistance needed
+            # Gentle 15% pull toward fish
+            nx = int(cursor.x() + dx * 0.15)
+            ny = int(cursor.y() + dy * 0.15)
+            ctypes.windll.user32.SetCursorPos(nx, ny)
+        except Exception:
+            pass
+
+    def _end_blockade(self):
+        """End the Touch Grass Blockade and return to normal."""
+        self._blockade_active = False
+        if self._blockade_cursor_timer:
+            self._blockade_cursor_timer.stop()
+            self._blockade_cursor_timer = None
+        if self._blockade_end_timer:
+            self._blockade_end_timer.stop()
+            self._blockade_end_timer = None
+
+        self.emotions.spike("happy", 0.3)
+        self.animator.queue_reaction(ReactionType.BOUNCE)
+        self.animator.spawn_particle("sparkle")
+
+        import random
+        messages = [
+            "Break's over! Feel better? Back to it.",
+            "Two minutes done. Your eyes thank you. Let's go!",
+            "Okay, you're free. But I'm watching the clock...",
+            "Welcome back! That wasn't so bad, was it?",
+        ]
+        self._say(random.choice(messages))
+
+        # Walk back to original position
+        if self._pre_blockade_pos is not None:
+            self._walk_to(self._pre_blockade_pos.x(), self._pre_blockade_pos.y(), speed=400.0)
+            self._pre_blockade_pos = None
+
+        # Reset work timer
+        self._continuous_work_start = 0.0
+
+    # ------------------------------------------------------------------
+    # Feature 6: Struggle Bus Observer
+    # ------------------------------------------------------------------
+
+    def _check_struggle_bus(self):
+        """Detect rapid tab switching or clipboard changes and offer help."""
+        if self._is_user_chatting:
+            return
+        now = time.monotonic()
+        # 20-minute cooldown
+        if now - self._last_struggle_time < 1200:
+            return
+        # Count events in last 60 seconds
+        cutoff = now - 60.0
+        recent_tabs = sum(1 for t in self._tab_switch_timestamps if t > cutoff)
+        recent_clips = sum(1 for t in self._clipboard_change_timestamps if t > cutoff)
+        # Prune old timestamps
+        self._tab_switch_timestamps = [t for t in self._tab_switch_timestamps if t > cutoff]
+        self._clipboard_change_timestamps = [
+            t for t in self._clipboard_change_timestamps if t > cutoff
+        ]
+        # Trigger: 8+ tab switches in 60s OR 5+ clipboard changes in 60s
+        if recent_tabs >= 8 or recent_clips >= 5:
+            self._last_struggle_time = now
+            self._offer_struggle_help()
+
+    def _offer_struggle_help(self):
+        """React to user appearing to struggle."""
+        self.emotions.spike("worried", 0.3)
+        self.animator.queue_reaction(ReactionType.HEAD_TILT)
+        self.animator.spawn_particle("question")
+        import random
+        messages = [
+            "You seem to be bouncing around a lot. Need help with something?",
+            "I notice you're switching tabs like crazy. Stuck on something?",
+            "That's a lot of copy-pasting. Want me to look at what you're working on?",
+            "Struggling with something? I can try to help if you tell me what's up.",
+            "You look like you're on the struggle bus. Want a co-pilot?",
+        ]
+        self._say(random.choice(messages))
+
+    # ------------------------------------------------------------------
+    # Feature 7: Social Media Enabler / Judge
+    # ------------------------------------------------------------------
+
+    def _check_social_media(self, title: str):
+        """React to procrastination sites based on current mood and time of day."""
+        if self._is_user_chatting:
+            return
+        now = time.monotonic()
+        hour = datetime.datetime.now().hour
+        # No reactions before 09:00 or after 22:00
+        if hour >= 22 or hour < 9:
+            self._social_site_start = 0.0
+            return
+        # 30-minute cooldown
+        if now - self._last_social_reaction_time < 1800:
+            return
+
+        title_lower = (title or "").lower()
+        site_detected = any(site in title_lower for site in PROCRASTINATION_SITES)
+
+        if not site_detected:
+            self._social_site_start = 0.0
+            return
+
+        # Start tracking when site first detected
+        if self._social_site_start == 0.0:
+            self._social_site_start = now
+        # Only react after 30+ seconds on the site (not a quick glance)
+        if now - self._social_site_start < 30:
+            return
+
+        self._last_social_reaction_time = now
+        self._social_site_start = 0.0
+
+        # Mood-based reaction
+        dominant = self.emotions.dominant_emotion()
+        energy = self.emotions._energy
+
+        import random
+        if dominant == "focused" or energy > 0.7:
+            # Judge mode — you were being productive!
+            self.emotions.spike("worried", 0.2)
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+            messages = [
+                "Wait... weren't you just being productive?",
+                "I saw you working hard a moment ago... and now this?",
+                "You know you have things to do, right?",
+                "Interesting choice. Back to work soon?",
+            ]
+            self._say(random.choice(messages))
+            # Set up a 3-minute follow-up
+            self._social_followup_timer = QTimer(self)
+            self._social_followup_timer.setSingleShot(True)
+            self._social_followup_timer.setInterval(180000)
+            self._social_followup_timer.timeout.connect(self._social_followup_check)
+            self._social_followup_timer.start()
+        elif dominant in ("bored", "sleepy") or energy < 0.3:
+            # Enabler mode — you're tired, take a break
+            self.emotions.spike("happy", 0.2)
+            self.animator.queue_reaction(ReactionType.NOD)
+            messages = [
+                "Honestly? You deserve a break. Enjoy.",
+                "Go ahead, I won't judge. ...much.",
+                "Sometimes you need to zone out. I get it.",
+                "Take your time. I'll be here when you're done.",
+            ]
+            self._say(random.choice(messages))
+        else:
+            # Neutral observation
+            self.emotions.spike("curious", 0.2)
+            self.animator.queue_reaction(ReactionType.HEAD_TILT)
+            messages = [
+                "Oh, taking a scroll break?",
+                "I see what's happening here...",
+                "Just passing through or setting up camp?",
+            ]
+            self._say(random.choice(messages))
+
+    def _social_followup_check(self):
+        """Check if user is still on a procrastination site 3 minutes later."""
+        if self._is_user_chatting:
+            return
+        try:
+            from core.system_monitor import _get_active_window_title
+            title = _get_active_window_title().lower()
+            still_on = any(site in title for site in PROCRASTINATION_SITES)
+            if still_on:
+                self.emotions.spike("worried", 0.3)
+                self.animator.spawn_particle("exclamation")
+                import random
+                messages = [
+                    "Still here? Okay, I'm getting concerned now.",
+                    "It's been 3 minutes. The rabbit hole is deep, huh?",
+                    "Hey... the code isn't going to write itself. Just saying.",
+                ]
+                self._say(random.choice(messages))
         except Exception:
             pass
 
@@ -3745,21 +5239,99 @@ class FishWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _check_morning_briefing(self):
-        """Trigger morning briefing on first interaction between 6-10 AM."""
+        """Full morning briefing agent — runs on first interaction 6-11 AM.
+        Pulls: calendar, emails, weather. Speaks a combined briefing.
+        """
         if not self._briefing_enabled or self._briefing_given_today:
             return
         import datetime
         now = datetime.datetime.now()
-        if 6 <= now.hour <= 10:
-            weather = self.emotions.weather
-            mood = self.emotions.dominant_emotion()
-            todo_count = self._todo_list.count_pending()
-            msg = generate_morning_briefing(weather, mood, todo_count)
-            self._say(msg)
-            self._tts.say(msg)
-            self._briefing_given_today = True
-            self.animator.queue_reaction(ReactionType.BOUNCE)
-            self.animator.spawn_particle("sparkle")
+        if not (6 <= now.hour <= 11):
+            return
+
+        # Run in background — never block UI
+        import threading
+        threading.Thread(target=self._run_morning_briefing, daemon=True).start()
+        self._briefing_given_today = True
+
+    def _run_morning_briefing(self):
+        """Build and deliver morning briefing from all sources."""
+        import datetime
+        from config import get_groq_keys
+
+        parts = []
+        groq_keys = get_groq_keys()
+        now = datetime.datetime.now()
+
+        # Greeting based on time
+        if now.hour < 9:
+            greeting = "Good morning! Early start today."
+        elif now.hour < 11:
+            greeting = "Morning!"
+        else:
+            greeting = "Hey, good morning."
+        parts.append(greeting)
+
+        # Weather
+        try:
+            from core.web_apis import weather
+            w = weather()
+            if w and "error" not in w.lower():
+                parts.append(w[:100])
+        except Exception:
+            pass
+
+        # Calendar
+        try:
+            from core.google_services import calendar_get_today
+            cal = calendar_get_today()
+            if cal and "Nothing" not in cal:
+                parts.append(cal)
+            else:
+                parts.append("Nothing on your calendar today.")
+        except Exception:
+            pass
+
+        # Emails — just count and top sender
+        try:
+            from core.google_services import gmail_get_unread
+            emails = gmail_get_unread(max_results=5)
+            if emails and "error" not in emails.lower():
+                parts.append(emails)
+        except Exception:
+            pass
+
+        # Todo count
+        try:
+            pending = self._todo_list.count_pending()
+            if pending > 0:
+                parts.append(f"You have {pending} things on your todo list.")
+        except Exception:
+            pass
+
+        # Combine and send through Groq for natural language
+        try:
+            import groq as groq_module
+            raw = " ".join(parts)
+            client = groq_module.Groq(api_key=groq_keys[0])
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{
+                    "role": "user",
+                    "content": ("You are Little Fish, a desktop companion. "
+                                "Deliver this morning briefing naturally in 3-4 sentences max. "
+                                "Be warm but concise. Don't list things robotically — speak naturally. "
+                                f"Raw data: {raw}")
+                }],
+                max_tokens=150,
+                temperature=0.7,
+            )
+            briefing = completion.choices[0].message.content.strip()
+        except Exception:
+            briefing = " ".join(parts)
+
+        # Deliver on main thread via signal
+        self._api_result_ready.emit(briefing)
 
     # ------------------------------------------------------------------
     # Intelligence: Jokes / Facts

@@ -138,6 +138,12 @@ class MovementEngine:
         self._paused: bool = False
         self._pause_until: float = 0.0
 
+        # ── Worried jitter (Feature 2) ───────────────────────────────
+        self._jitter_cd: float = 0.0  # countdown until next jitter
+
+        # ── Focused speed multiplier (Feature 4) ─────────────────────
+        self._focused_speed_mult: float = 1.0  # 1.0 = normal, 0.3 = focused
+
     # ── Public API ───────────────────────────────────────────────────
 
     @property
@@ -560,6 +566,31 @@ class MovementEngine:
         accel = cfg["acceleration"]
         slow_r = cfg["slow_radius"]
 
+        # Feature 4: Focused stillness — reduce speeds
+        focused_val = self._emo.values.get("focused", 0.0)
+        if focused_val > 0.5 and self._emo.dominant_emotion() == "focused":
+            intensity = min(1.0, (focused_val - 0.5) * 2.0)  # 0..1 over 0.5..1.0
+            self._focused_speed_mult = 1.0 - 0.7 * intensity  # down to 0.3
+        else:
+            self._focused_speed_mult = 1.0
+        max_spd *= self._focused_speed_mult
+        accel *= self._focused_speed_mult
+
+        # Feature 2: Worried jitter
+        worried_val = self._emo.values.get("worried", 0.0)
+        if worried_val > 0.5 and self._emo.dominant_emotion() == "worried":
+            self._jitter_cd -= dt
+            if self._jitter_cd <= 0:
+                self._jitter_cd = 0.5
+                intensity = min(1.0, (worried_val - 0.5) * 2.0)  # 0..1
+                jitter_px = 1.0 + 2.0 * intensity  # 1-3 px
+                self._vx += random.uniform(-jitter_px, jitter_px) / max(dt, 0.001)
+                self._vy += random.uniform(-jitter_px, jitter_px) / max(dt, 0.001)
+
+        # Feature 2: Edge avoidance when worried
+        if worried_val > 0.5:
+            self._apply_edge_avoidance(dt, worried_val)
+
         if self._target_x is not None and self._target_y is not None:
             fx, fy = self._fish_center()
             dx = self._target_x - fx
@@ -631,3 +662,38 @@ class MovementEngine:
                 self._vy = 0.0
 
         self._fish.move(int(nx), int(ny))
+
+    # ── Edge avoidance (Feature 2: worried) ──────────────────────────
+
+    def _apply_edge_avoidance(self, dt: float, worry: float):
+        """Push the fish away from screen edges when worried.
+        Repulsion zone is 150px scaled by worry intensity."""
+        bounds = self._screen_rect()
+        if not bounds:
+            return
+        fx, fy = self._fish_center()
+        w = self._fish.width()
+        h = self._fish.height()
+        intensity = min(1.0, (worry - 0.5) * 2.0)  # 0..1
+        zone = 150.0
+        force = 200.0 * intensity  # px/s push
+
+        # Distances to each edge
+        dl = fx - bounds.left()
+        dr = bounds.right() - fx
+        dt_ = fy - bounds.top()
+        db = bounds.bottom() - fy
+
+        push_x = 0.0
+        push_y = 0.0
+        if dl < zone:
+            push_x += force * (1.0 - dl / zone)
+        if dr < zone:
+            push_x -= force * (1.0 - dr / zone)
+        if dt_ < zone:
+            push_y += force * (1.0 - dt_ / zone)
+        if db < zone:
+            push_y -= force * (1.0 - db / zone)
+
+        self._vx += push_x * dt
+        self._vy += push_y * dt

@@ -319,10 +319,44 @@ class FishChat(QObject):
         rel_stage = "stranger"
         if self._relationship:
             rel_stage = self._relationship.stage
+
+        # Feature 3: Check for pending follow-ups (acquaintance+)
+        if rel_stage not in ("stranger",) and self._learning_engine:
+            try:
+                followup = self._learning_engine.get_pending_followup()
+                if followup:
+                    question = followup.get("followup_question", "")
+                    topic = followup.get("topic", "")
+                    if question:
+                        self._learning_engine.mark_followup_used(topic)
+                        self._chat_queue.put(("unprompted", question))
+                        return
+            except Exception:
+                pass
+
         prompts = UNPROMPTED_PROMPTS.get(rel_stage, UNPROMPTED_PROMPTS["stranger"])
         prompt = random.choice(prompts)
 
-        self._chat_queue.put(("unprompted", prompt))
+        # Feature 1: 20% chance to inject a grievance (friend+)
+        grievance_extra = ""
+        if rel_stage in ("friend", "close_friend", "best_friend") and self._learning_engine:
+            try:
+                if random.random() < 0.2:
+                    g = self._learning_engine.get_random_grievance()
+                    if g:
+                        date_str = g.get("date", "")
+                        text = g.get("text", "")
+                        grievance_extra = (
+                            f"\nYou remember this about the user: {text} "
+                            f"(from {date_str}). If it is relevant or if enough "
+                            "time has passed, bring it up naturally in your next "
+                            "message as leverage or genuine concern. Be specific. "
+                            "Reference the date if it was more than a week ago."
+                        )
+            except Exception:
+                pass
+
+        self._chat_queue.put(("unprompted", prompt + grievance_extra))
 
     def _generate_unprompted(self, internal_prompt: str):
         try:
@@ -346,7 +380,7 @@ class FishChat(QObject):
                     model="llama-3.1-8b-instant",
                     messages=messages,
                     temperature=0.9,
-                    max_tokens=120,
+                    max_tokens=150,
                 )
                 reply = completion.choices[0].message.content.strip()
                 from core.personality import apply_verbal_tic

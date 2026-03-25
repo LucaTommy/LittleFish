@@ -194,11 +194,15 @@ class ActiveReaction:
 
 @dataclass
 class FaceTransition:
-    """Cross-fade between two face states over 300ms."""
+    """Staged cross-fade between two face states over 0.4s.
+    Phase 1 (0.0-0.25): hold current face fully
+    Phase 2 (0.25-0.75): crossfade via opacity blend
+    Phase 3 (0.75-1.0): show new face fully
+    """
     from_state: str = "happy"
     to_state: str = "happy"
     progress: float = 1.0   # 1.0 = fully arrived at to_state
-    duration: float = 0.3
+    duration: float = 0.4
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +276,13 @@ class Animator:
         self._compose_transforms()
 
     def set_face(self, state: str):
-        """Request a face state change with cross-fade."""
+        """Request a face state change with staged cross-fade (Feature 5)."""
         if state != self.face_transition.to_state:
             self.face_transition = FaceTransition(
                 from_state=self.face_transition.to_state,
                 to_state=state,
                 progress=0.0,
+                duration=0.4,
             )
             self.current_face = state
 
@@ -421,10 +426,23 @@ class Animator:
             ft.progress = min(ft.progress + dt / ft.duration, 1.0)
 
     def get_face_blend(self) -> tuple[str, str, float]:
-        """Returns (from_state, to_state, blend_t) where blend_t 0→1 ease-in-out."""
+        """Returns (from_state, to_state, blend_t) with staged crossfade.
+        blend_t 0→1 mapped through three phases:
+          progress 0.0-0.25 → blend_t = 0.0 (hold old face)
+          progress 0.25-0.75 → blend_t = 0.0→1.0 (crossfade)
+          progress 0.75-1.0 → blend_t = 1.0 (show new face)
+        """
         ft = self.face_transition
-        t = ease_in_out_sine(ft.progress)
-        return ft.from_state, ft.to_state, t
+        p = ft.progress
+        if p <= 0.25:
+            blend_t = 0.0
+        elif p >= 0.75:
+            blend_t = 1.0
+        else:
+            # Map 0.25..0.75 → 0..1 with ease-in-out
+            raw = (p - 0.25) / 0.5
+            blend_t = ease_in_out_sine(raw)
+        return ft.from_state, ft.to_state, blend_t
 
     # ------------------------------------------------------------------
     # Reactions

@@ -5,7 +5,7 @@ No antialiasing — every shape is crisp pixel art.
 """
 
 from PyQt6.QtCore import QRect, QRectF, Qt, QPointF
-from PyQt6.QtGui import QColor, QPainter, QPixmap, QPen, QBrush, QPainterPath
+from PyQt6.QtGui import QColor, QPainter, QPixmap, QPen, QBrush, QPainterPath, QImage
 
 from widget.animator import Animator
 
@@ -91,6 +91,10 @@ class FishRenderer:
         self._show_name: bool = True
         self._hobby_tint = None  # QColor or None — set during hobby scenes
         self._suppress_prop = False  # True when hobby scene renders its own prop
+        self._desaturation_amount: float = 0.0  # 0.0 = full color, 1.0 = full grayscale
+        self._union_break: bool = False      # Feature 2: sleep mask over eyes
+        self._silent_treatment: bool = False  # Feature 4: whiteboard prop
+        self._surfing: bool = False          # Window Surfing: dangling legs
 
     def set_body_color(self, hex_color: str):
         """Set the fish body color from a hex string, auto-deriving variants."""
@@ -152,6 +156,10 @@ class FishRenderer:
 
         self._draw_body(p)
 
+        # Dangling legs when surfing on window borders
+        if self._surfing:
+            self._draw_surfing_legs(p)
+
         _, face, _ = animator.get_face_blend()
         blink = animator.blink.progress
 
@@ -179,6 +187,14 @@ class FishRenderer:
             if not self._suppress_prop:
                 self._draw_prop(p, animator.active_prop)
 
+        # Union break: sleep mask over eyes
+        if self._union_break:
+            self._draw_sleep_mask(p)
+
+        # Silent treatment: whiteboard prop
+        if self._silent_treatment:
+            self._draw_whiteboard(p)
+
         # Particles (drawn after face, around body)
         if hasattr(animator, 'particles'):
             self._draw_particles(p, animator.particles)
@@ -192,7 +208,85 @@ class FishRenderer:
         # (was drawing a visible square around the fish)
 
         p.end()
+
+        # Grayscale desaturation overlay (sad/lonely)
+        if self._desaturation_amount > 0.01:
+            self._apply_desaturation()
+
         return self._pixmap
+
+    # ------------------------------------------------------------------
+    # Grayscale desaturation
+    # ------------------------------------------------------------------
+
+    def _apply_desaturation(self):
+        """Blend the current pixmap toward grayscale by _desaturation_amount."""
+        amt = max(0.0, min(1.0, self._desaturation_amount))
+        img = self._pixmap.toImage()
+        gray = img.convertToFormat(QImage.Format.Format_Grayscale8)
+        gray = gray.convertToFormat(img.format())
+        # Composite: paint the grayscale image over the color one with
+        # opacity equal to the desaturation amount.
+        result = QImage(img)
+        gp = QPainter(result)
+        gp.setOpacity(amt)
+        gp.drawImage(0, 0, gray)
+        gp.end()
+        self._pixmap = QPixmap.fromImage(result)
+
+    # ------------------------------------------------------------------
+    # Union break: sleep mask
+    # ------------------------------------------------------------------
+
+    def _draw_sleep_mask(self, p: QPainter):
+        """Draw a tiny sleep mask (two black rectangles) over the eye positions."""
+        mask_color = QColor(30, 30, 40)
+        strap_color = QColor(50, 50, 60)
+        # Strap across the head
+        p.fillRect(B + 3, B + 8, PIXEL_BODY - 6, 1, strap_color)
+        # Left eye mask
+        p.fillRect(L_EYE.x() - 1, L_EYE.y(), L_EYE.width() + 2, L_EYE.height(), mask_color)
+        # Right eye mask
+        p.fillRect(R_EYE.x() - 1, R_EYE.y(), R_EYE.width() + 2, R_EYE.height(), mask_color)
+
+    # ------------------------------------------------------------------
+    # Silent treatment: whiteboard
+    # ------------------------------------------------------------------
+
+    def _draw_whiteboard(self, p: QPainter):
+        """Draw a tiny whiteboard held in front of the fish body."""
+        # Position: slightly left of center, in front of body
+        wx = B + 2
+        wy = B + PIXEL_BODY - 8
+        ww, wh = 8, 6
+        # Black border
+        p.fillRect(wx - 1, wy - 1, ww + 2, wh + 2, QColor(30, 30, 30))
+        # White fill
+        p.fillRect(wx, wy, ww, wh, QColor(240, 240, 240))
+
+    # ------------------------------------------------------------------
+    # Window Surfing: dangling legs
+    # ------------------------------------------------------------------
+
+    def _draw_surfing_legs(self, p: QPainter):
+        """Draw dangling legs below body when surfing on window borders."""
+        import math as _math
+        import time as _time
+
+        sway = int(_math.sin(_time.time() * 2.0) * 1)  # slight sway
+
+        leg_color = self._body_border
+        shoe_color = QColor(60, 60, 70)
+
+        ly = B + PIXEL_BODY  # bottom of body
+        # Left leg (1px wide, 3px + 1px shoe)
+        lx = B + 7 + sway
+        p.fillRect(lx, ly, 1, 3, leg_color)
+        p.fillRect(lx, ly + 3, 1, 1, shoe_color)
+        # Right leg
+        rx = B + 16 - sway
+        p.fillRect(rx, ly, 1, 3, leg_color)
+        p.fillRect(rx, ly + 3, 1, 1, shoe_color)
 
     # ------------------------------------------------------------------
     # Body

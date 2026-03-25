@@ -126,6 +126,92 @@ _FAST_PATTERNS = [
      lambda m: CommandResult("open_calculator", "", "")),
 
     # Search YouTube / Google (before generic "search" or "play" catch)
+    # --- Gmail ---
+    (r"(?:check|read|show|get)\s+(?:my\s+)?(?:unread\s+)?(?:emails?|gmail|inbox|mail)",
+     lambda m: CommandResult("gmail_unread", "", "")),
+    (r"(?:search|find)\s+(?:my\s+)?(?:emails?|gmail|mail)\s+(?:for|about)\s+(.+)",
+     lambda m: CommandResult("gmail_search", m.group(1).strip(), "")),
+    (r"(?:send|write|compose|draft)\s+(?:an?\s+)?(?:email|mail|gmail)\s+(?:to\s+)?(.+)",
+     lambda m: CommandResult("gmail_send_prompt", m.group(1).strip(), "")),
+    (r"(?:mark|set)\s+(?:all\s+)?(?:my\s+)?(?:emails?|gmail|mail|inbox)\s+(?:as\s+)?read",
+     lambda m: CommandResult("gmail_mark_read", "", "")),
+    (r"(?:can\s+you\s+)?mark\s+(?:all\s+)?(?:my\s+)?(?:emails?|mail)\s+(?:as\s+)?read",
+     lambda m: CommandResult("gmail_mark_read", "", "")),
+    (r"(?:reply|respond|answer)\s+(?:to\s+)?(?:the\s+)?(?:email|mail)\s+(?:from|about|to)\s+(.+)",
+     lambda m: CommandResult("gmail_reply_prompt", m.group(1).strip(), "")),
+    (r"(?:weekly|this\s+week(?:'s)?)\s+(?:email|mail|digest|summary)",
+     lambda m: CommandResult("gmail_weekly_digest", "", "")),
+    (r"(?:email|mail)\s+(?:digest|summary)\s+(?:for\s+)?(?:this\s+)?week",
+     lambda m: CommandResult("gmail_weekly_digest", "", "")),
+    (r"(?:unsubscribe|spam|block)\s+(?:emails?\s+)?(?:from\s+)?(.+)",
+     lambda m: CommandResult("gmail_spam", m.group(1).strip(), "")),
+    (r"(?:mark)\s+(.+?)\s+(?:as\s+)?spam",
+     lambda m: CommandResult("gmail_spam", m.group(1).strip(), "")),
+
+    # --- Calendar ---
+    (r"(?:what'?s?\s+on\s+my\s+calendar|what\s+do\s+i\s+have)\s+today|(?:today'?s?\s+)?(?:calendar|schedule|agenda)\s*(?:today)?",
+     lambda m: CommandResult("calendar_today", "", "")),
+    (r"(?:what'?s?\s+on\s+my\s+calendar|what\s+do\s+i\s+have)\s+this\s+week|(?:this\s+)?week'?s?\s+(?:calendar|schedule|agenda)",
+     lambda m: CommandResult("calendar_week", "", "")),
+    (r"(?:create|add|schedule|make)\s+(?:a\s+)?(?:calendar\s+)?(?:event|meeting|appointment)\s*(?:called|named|:)?\s*(.+)?",
+     lambda m: CommandResult("calendar_create", (m.group(1) or "").strip(), "")),
+    (r"(?:am\s+i\s+free|am\s+i\s+busy|do\s+i\s+have\s+anything)\s+(?:on\s+|at\s+)?(.+)",
+     lambda m: CommandResult("calendar_check_free", m.group(1).strip(), "")),
+
+    # --- Web Search & Research ---
+    (r"(?:web\s+)?search\s+(?:the\s+web|online|internet)\s+(?:for\s+)?(.+)",
+     lambda m: CommandResult("web_search", m.group(1).strip(), "")),
+    (r"(?:look\s+up|research|find\s+out)\s+(?:about\s+)?(.+?)(?:\s+(?:online|on\s+the\s+web))?$",
+     lambda m: CommandResult("web_question", m.group(1).strip(), "")),
+    (r"(?:what\s+is|who\s+is|what\s+are|how\s+(?:does|do|to|many|much))\s+(.+)",
+     lambda m: CommandResult("web_question", m.group(1).strip(), "")),
+    (r"(?:fetch|scrape|get)\s+(?:the\s+)?(?:page|content|text)\s+(?:from|at|of)\s+(.+)",
+     lambda m: CommandResult("web_fetch", m.group(1).strip(), "")),
+    (r"(?:research|write\s+a?\s*report|deep\s+dive)\s+(?:about|on|into)\s+(.+?)(?:\s+(?:and\s+)?(?:save|export))?",
+     lambda m: CommandResult("web_research_doc", m.group(1).strip(), "")),
+    (r"(?:latest|recent)\s+news\s+(?:about|on)\s+(.+)",
+     lambda m: CommandResult("news_search", m.group(1).strip(), "")),
+
+    # --- Drive / Docs ---
+    (r"(?:list|show|my)\s+(?:google\s+)?drive\s+files?",
+     lambda m: CommandResult("drive_list", "", "")),
+    (r"(?:search|find)\s+(?:in\s+)?(?:my\s+)?(?:google\s+)?drive\s+(?:for\s+)?(.+)",
+     lambda m: CommandResult("drive_search", m.group(1).strip(), "")),
+    (r"(?:create|make|new)\s+(?:a\s+)?(?:google\s+)?doc(?:ument)?\s+(?:called|named|titled)\s+(.+)",
+     lambda m: CommandResult("docs_create_prompt", m.group(1).strip(), "")),
+
+    # --- Google Tasks ---
+    (r"(?:show|list|get|what\s+are)\s+(?:my\s+)?(?:google\s+)?tasks?",
+     lambda m: CommandResult("gtasks_list", "", "")),
+    (r"(?:add|create)\s+(?:a\s+)?(?:google\s+)?task\s+(.+)",
+     lambda m: CommandResult("gtasks_add", m.group(1).strip(), "")),
+
+    # --- Morning Briefing ---
+    (r"(?:morning\s+briefing|daily\s+briefing|what'?s\s+going\s+on|catch\s+me\s+up|what\s+did\s+i\s+miss)",
+     lambda m: CommandResult("morning_briefing", "", "")),
+
+    # --- Code Assistant ---
+    (r"(?:look\s+at|check|review|analyze)\s+(?:this|my)\s+(?:code|script|function|file)",
+     lambda m: CommandResult("code_analyze", "", "")),
+    (r"what(?:'s|\s+is|\s+does)\s+(?:this|the)\s+(?:code|function|script)\s+do",
+     lambda m: CommandResult("code_explain", "", "")),
+    (r"(?:find|any|check\s+for)\s+(?:bugs?|errors?|issues?|problems?)\s+(?:in|with)\s+(?:(?:the|this|my)\s+)?(?:code|script|file)",
+     lambda m: CommandResult("code_bugs", "", "")),
+    (r"(?:explain|what'?s|what\s+is)\s+(?:this|the)\s+(?:error|exception|traceback)",
+     lambda m: CommandResult("code_error", "", "")),
+    (r"(?:improve|optimize|refactor|clean\s+up)\s+(?:this|my|the)\s+code",
+     lambda m: CommandResult("code_improve", "", "")),
+    (r"(?:write|generate|create|make)\s+(?:a\s+)?(?:code|function|script|class)\s+(?:that|to|for|in)\s+(.+)",
+     lambda m: CommandResult("code_generate", m.group(1).strip(), "")),
+    (r"(?:read|look\s+at|open|check)\s+(?:my|the|current|active)\s+(?:file|script)",
+     lambda m: CommandResult("code_read_file", "", "")),
+
+    # --- Clipboard agent ---
+    (r"(?:summarize|summarise).*(?:this|that|it|the\s+text|clipboard)",
+     lambda m: CommandResult("summarize_clipboard", "", "")),
+    (r"(?:read|fetch|open|summarize).*(?:this|the)\s+(?:page|site|link|url)",
+     lambda m: CommandResult("web_fetch_clipboard", "", "")),
+
     (r"(?:search|play|put)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)",
      lambda m: _open_youtube(m.group(1).strip())),
     (r"(?:youtube|metti\s+(?:su\s+)?youtube)\s+(.+)",
@@ -401,6 +487,46 @@ Info & Knowledge:
 - briefing: morning briefing / summary. params: {}
 - joke: tell a joke or fun fact. params: {}
 
+Gmail & Email:
+- gmail_unread: check unread emails. params: {}
+- gmail_search: search emails. params: {"query": "..."}
+- gmail_send_prompt: compose/send an email. params: {"to": "...", "subject": "...", "body": "..."}
+- gmail_mark_read: mark all unread as read. params: {}
+- gmail_reply_prompt: reply to an email. params: {"query": "..."}
+- gmail_weekly_digest: weekly email summary/digest. params: {}
+- gmail_spam: mark emails as spam / unsubscribe. params: {"sender": "..."}
+
+Calendar:
+- calendar_today: what's on today's calendar. params: {}
+- calendar_week: this week's calendar. params: {}
+- calendar_create: create a calendar event. params: {"summary": "...", "date": "...", "time": "...", "duration_hours": 1}
+- calendar_check_free: check if free on a date/time. params: {"when": "..."}
+
+Web Search & Research:
+- web_search: search the web. params: {"query": "..."}
+- web_question: answer a question using web + AI. params: {"question": "..."}
+- web_fetch: fetch a web page. params: {"url": "..."}
+- web_research_doc: research a topic and save report. params: {"topic": "..."}
+- news_search: search for news on a topic. params: {"query": "..."}
+
+Google Drive & Docs:
+- drive_list: list Google Drive files. params: {}
+- drive_search: search Google Drive. params: {"query": "..."}
+- docs_create_prompt: create a Google Doc. params: {"title": "..."}
+
+Google Tasks:
+- gtasks_list: show Google tasks. params: {}
+- gtasks_add: add a task. params: {"title": "..."}
+
+Code Assistant:
+- code_analyze: review/analyze code from clipboard or file. params: {}
+- code_explain: explain what code does. params: {}
+- code_bugs: find bugs in code. params: {}
+- code_error: explain an error/exception/traceback. params: {}
+- code_improve: suggest improvements for code. params: {}
+- code_generate: generate code from description. params: {"description": "...", "language": "python"}
+- code_read_file: read and analyze the current file. params: {}
+
 Clipboard:
 - read_clipboard: read what's on clipboard. params: {}
 - clipboard_clear: clear clipboard. params: {}
@@ -477,6 +603,34 @@ Examples:
 - "svegliati" -> wake_up
 - "dimmi qualcosa di interessante" -> tell_fact
 - "fai un complimento" -> give_compliment
+- "check my emails" -> gmail_unread
+- "search my email for invoices" -> gmail_search, query="invoices"
+- "send an email to mom" -> gmail_send_prompt, to="mom"
+- "mark all my emails as read" -> gmail_mark_read
+- "reply to the email from John" -> gmail_reply_prompt, query="from:John"
+- "weekly email digest" -> gmail_weekly_digest
+- "unsubscribe from newsletters" -> gmail_spam, sender="newsletters"
+- "mark spam from promotions" -> gmail_spam, sender="promotions"
+- "what's on my calendar today" -> calendar_today
+- "this week's schedule" -> calendar_week
+- "create a meeting called standup" -> calendar_create, summary="standup"
+- "am I free on Friday" -> calendar_check_free, when="Friday"
+- "search the web for python tutorials" -> web_search, query="python tutorials"
+- "what is quantum computing" -> web_question, question="quantum computing"
+- "latest news about AI" -> news_search, query="AI"
+- "research climate change and save a report" -> web_research_doc, topic="climate change"
+- "list my drive files" -> drive_list
+- "search drive for budget" -> drive_search, query="budget"
+- "create a doc called Meeting Notes" -> docs_create_prompt, title="Meeting Notes"
+- "show my tasks" -> gtasks_list
+- "add task buy groceries" -> gtasks_add, title="buy groceries"
+- "review this code" -> code_analyze
+- "what does this code do" -> code_explain
+- "find bugs in my code" -> code_bugs
+- "explain this error" -> code_error
+- "improve this code" -> code_improve
+- "write a function to sort a list" -> code_generate, description="sort a list"
+- "check my current file" -> code_read_file
 
 Return ONLY valid JSON, nothing else:
 {"intent": "intent_name", "params": {...}, "confidence": 0.0-1.0}
@@ -909,6 +1063,94 @@ class CommandParser:
             return CommandResult("give_compliment", "", "")
         elif intent == "tell_fact":
             return CommandResult("tell_fact", "", "")
+
+        # --- Gmail & Email ---
+        elif intent == "gmail_unread":
+            return CommandResult("gmail_unread", "", "")
+        elif intent == "gmail_search":
+            return CommandResult("gmail_search", params.get("query", ""), "")
+        elif intent == "gmail_send_prompt":
+            to = params.get("to", "")
+            subj = params.get("subject", "")
+            body = params.get("body", "")
+            return CommandResult("gmail_send_prompt",
+                                 f"{to}|{subj}|{body}", "")
+        elif intent == "gmail_mark_read":
+            return CommandResult("gmail_mark_read", "", "")
+        elif intent == "gmail_reply_prompt":
+            return CommandResult("gmail_reply_prompt", params.get("query", ""), "")
+        elif intent == "gmail_weekly_digest":
+            return CommandResult("gmail_weekly_digest", "", "")
+        elif intent == "gmail_spam":
+            return CommandResult("gmail_spam", params.get("sender", ""), "")
+
+        # --- Calendar ---
+        elif intent == "calendar_today":
+            return CommandResult("calendar_today", "", "")
+        elif intent == "calendar_week":
+            return CommandResult("calendar_week", "", "")
+        elif intent == "calendar_create":
+            summary = params.get("summary", "")
+            date = params.get("date", "")
+            t = params.get("time", "")
+            dur = params.get("duration_hours", "1")
+            return CommandResult("calendar_create",
+                                 f"{summary}|{date}|{t}|{dur}", "")
+        elif intent == "calendar_check_free":
+            return CommandResult("calendar_check_free",
+                                 params.get("when", ""), "")
+
+        # --- Web Search & Research ---
+        elif intent == "web_search":
+            return CommandResult("web_search",
+                                 params.get("query", ""), "")
+        elif intent == "web_question":
+            return CommandResult("web_question",
+                                 params.get("question", ""), "")
+        elif intent == "web_fetch":
+            return CommandResult("web_fetch",
+                                 params.get("url", ""), "")
+        elif intent == "web_research_doc":
+            return CommandResult("web_research_doc",
+                                 params.get("topic", ""), "")
+        elif intent == "news_search":
+            return CommandResult("news_search",
+                                 params.get("query", ""), "")
+
+        # --- Google Drive & Docs ---
+        elif intent == "drive_list":
+            return CommandResult("drive_list", "", "")
+        elif intent == "drive_search":
+            return CommandResult("drive_search",
+                                 params.get("query", ""), "")
+        elif intent == "docs_create_prompt":
+            return CommandResult("docs_create_prompt",
+                                 params.get("title", ""), "")
+
+        # --- Google Tasks ---
+        elif intent == "gtasks_list":
+            return CommandResult("gtasks_list", "", "")
+        elif intent == "gtasks_add":
+            return CommandResult("gtasks_add",
+                                 params.get("title", ""), "")
+
+        # --- Code Assistant ---
+        elif intent == "code_analyze":
+            return CommandResult("code_analyze", "", "")
+        elif intent == "code_explain":
+            return CommandResult("code_explain", "", "")
+        elif intent == "code_bugs":
+            return CommandResult("code_bugs", "", "")
+        elif intent == "code_error":
+            return CommandResult("code_error", "", "")
+        elif intent == "code_improve":
+            return CommandResult("code_improve", "", "")
+        elif intent == "code_generate":
+            desc = params.get("description", "")
+            lang = params.get("language", "Python")
+            return CommandResult("code_generate", f"{desc}|{lang}", "")
+        elif intent == "code_read_file":
+            return CommandResult("code_read_file", "", "")
 
         return None
 

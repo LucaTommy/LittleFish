@@ -45,6 +45,9 @@ except ImportError:
     pass
 
 
+WHISPER_PREFIX = "\x00WHISPER\x00"
+
+
 class TTS:
     _mci_lock = threading.Lock()  # serialize all MCI calls across threads
 
@@ -56,6 +59,7 @@ class TTS:
         self._speaking = False
         self._lock = threading.Lock()
         self._last_text = ""  # last text queued for speaking (echo detection)
+        self._suppressed = False  # True during silent treatment — no audio output
 
         voice_cfg = config.get("voice", {})
         self._provider = voice_cfg.get("tts_provider", "edge")  # "edge", "elevenlabs", or "pyttsx3"
@@ -95,6 +99,8 @@ class TTS:
 
     def say(self, text: str):
         """Queue text to be spoken. Non-blocking."""
+        if self._suppressed:
+            return  # silent treatment — no audio
         if self._enabled and text:
             # Auto-restart worker if it crashed
             if not self._thread.is_alive():
@@ -106,6 +112,16 @@ class TTS:
                 self._speaking = True
             self._last_text = text
             self._queue.put(text)
+
+    def say_whisper(self, text: str):
+        """Queue text as a whisper (lower volume, slower rate). Non-blocking.
+        Does NOT set _speaking so the mouth won't animate."""
+        if self._suppressed or not self._enabled or not text:
+            return
+        if not self._thread.is_alive():
+            self._queue = queue.Queue()
+            self._start_worker()
+        self._queue.put(WHISPER_PREFIX + text)
 
     def stop(self):
         """Signal the worker to shut down."""
@@ -171,19 +187,29 @@ class TTS:
             text = self._queue.get()
             if text is None:
                 break
+            whisper = False
+            if isinstance(text, str) and text.startswith(WHISPER_PREFIX):
+                text = text[len(WHISPER_PREFIX):]
+                whisper = True
             try:
-                with self._lock:
-                    self._speaking = True
+                if not whisper:
+                    with self._lock:
+                        self._speaking = True
                 lang = detect_language(text)
                 voice = self._edge_voice_it if lang == "it" else self._edge_voice_en
-                print(f"[TTS] Edge speak: lang={lang} voice={voice} text={text[:60]!r}")
-                loop.run_until_complete(self._edge_speak(text, voice))
-                print("[TTS] Edge speak finished")
+                if whisper:
+                    print(f"[TTS] Edge whisper: lang={lang} voice={voice} text={text[:60]!r}")
+                    loop.run_until_complete(self._edge_speak_whisper(text, voice))
+                else:
+                    print(f"[TTS] Edge speak: lang={lang} voice={voice} text={text[:60]!r}")
+                    loop.run_until_complete(self._edge_speak(text, voice))
+                    print("[TTS] Edge speak finished")
             except Exception as e:
                 print(f"[TTS] Edge TTS error: {e}")
                 import traceback; traceback.print_exc()
                 # Try pyttsx3 fallback for this one utterance
-                self._pyttsx3_fallback_say(text)
+                if not whisper:
+                    self._pyttsx3_fallback_say(text)
             finally:
                 with self._lock:
                     self._speaking = False
@@ -214,6 +240,30 @@ class TTS:
         except Exception as e:
             print(f"[TTS] _edge_speak error: {e}")
             raise
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    async def _edge_speak_whisper(text: str, voice: str):
+        """Generate whisper audio with reduced volume and slower rate."""
+        import edge_tts
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        try:
+            communicate = edge_tts.Communicate(
+                text, voice, rate="-30%", volume="-50%"
+            )
+            await communicate.save(tmp_path)
+            if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                TTS._play_mp3(tmp_path)
+        except Exception as e:
+            print(f"[TTS] _edge_speak_whisper error: {e}")
         finally:
             try:
                 os.unlink(tmp_path)

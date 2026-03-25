@@ -1721,6 +1721,13 @@ class DashboardWindow(QWidget):
             f"<p>A living desktop companion.</p>"
             f"<p>Built with PyQt6 + Groq AI</p>"
             f"<hr>"
+            f"<p><b>v1.8.0 — New features:</b></p>"
+            f"<ul>"
+            f"<li>Sleep Talking — whispered mumbles during deep sleep</li>"
+            f"<li>Digital Hoarding — periodic scrapbook screenshots with OCR review</li>"
+            f"<li>Window Surfing — fish sits on window borders when idle</li>"
+            f"</ul>"
+            f"<hr>"
             f"<p>by Luca & Leonardo</p>"
         )
 

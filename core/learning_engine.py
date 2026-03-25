@@ -83,6 +83,9 @@ class LearningEngine:
     _PATTERNS_FILE = "behavior_patterns.json"
     _RULES_FILE = "response_rules.json"
     _QUALITY_FILE = "interaction_quality.json"
+    _GRIEVANCES_FILE = "grievances.json"
+    _ALARM_FILE = "alarm_history.json"
+    _FOLLOWUPS_FILE = "pending_followups.json"
 
     def __init__(self, groq_keys: list[str], settings: dict):
         self._groq_keys = groq_keys or []
@@ -104,14 +107,27 @@ class LearningEngine:
             "recent_positives": [],
         })
 
+        # Grievances (Feature 1)
+        self._grievances: list[dict] = _read_json(
+            self._dir / self._GRIEVANCES_FILE, []
+        )
+        # Alarm history (Feature 2)
+        self._alarm_history: dict = _read_json(
+            self._dir / self._ALARM_FILE, {}
+        )
+        # Calendar sarcasm daily limit tracking
+        self._alarm_sarcasm_today: dict[str, str] = {}  # name -> date string
+
         # Session bookkeeping
         self._session_start: float = 0.0
         self._session_interaction_count: int = 0
+        self._followup_fired_this_session: bool = False
 
         print(f"[LEARN] Loaded {len(self._facts)} facts, "
               f"{len(self._patterns.get('sessions', []))} session logs, "
               f"{len(self._rules)} rules, "
-              f"{self._quality.get('total_interactions', 0)} total interactions")
+              f"{self._quality.get('total_interactions', 0)} total interactions, "
+              f"{len(self._grievances)} grievances")
 
     # ------------------------------------------------------------------
     # Public API
@@ -186,12 +202,25 @@ class LearningEngine:
 
             # Distill session facts in background thread (never blocks quit)
             if conversation_history:
+                history_copy = list(conversation_history)
                 t = threading.Thread(
                     target=self._distill_session,
-                    args=(list(conversation_history),),
+                    args=(history_copy,),
                     daemon=True,
                 )
                 t.start()
+                # Grievance extraction (Feature 1)
+                threading.Thread(
+                    target=self._distill_grievances,
+                    args=(history_copy,),
+                    daemon=True,
+                ).start()
+                # Follow-up extraction (Feature 3)
+                threading.Thread(
+                    target=self._distill_followups,
+                    args=(history_copy,),
+                    daemon=True,
+                ).start()
 
             # Every 7 sessions → distill patterns
             if len(sessions) % 7 == 0 and len(sessions) > 0:
@@ -469,6 +498,235 @@ class LearningEngine:
 
         except Exception as exc:
             print(f"[LEARN] _generate_response_rules error: {exc}")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Feature 1 — Grievance extraction
+    # ------------------------------------------------------------------
+
+    def _distill_grievances(self, conversation_history: list):
+        """Extract grievances/promises from conversation. Runs in background."""
+        try:
+            if not self._groq_keys:
+                return
+            recent = conversation_history[-20:]
+            if len(recent) < 2:
+                return
+            convo_text = "\n".join(
+                f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
+                for m in recent
+            )
+            response = self._call_groq(
+                system_prompt=(
+                    "From this conversation, extract any promises the user made, "
+                    "complaints they expressed, or bad habits they mentioned. "
+                    "Return JSON array of strings. "
+                    'Example: ["User promised to sleep before 2am", '
+                    '"User complained about a family dispute", '
+                    '"User said they would exercise more"]. '
+                    "Return [] if none. Return ONLY the JSON array."
+                ),
+                user_prompt=convo_text,
+                temperature=0.2,
+            )
+            new_items = self._parse_json_response(response, list)
+            if not new_items:
+                return
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            existing_lower = {g["text"].lower() for g in self._grievances}
+            added = 0
+            for item in new_items:
+                if isinstance(item, str) and item.strip() and item.lower() not in existing_lower:
+                    self._grievances.append({
+                        "text": item.strip(),
+                        "date": today,
+                        "times_referenced": 0,
+                    })
+                    existing_lower.add(item.lower())
+                    added += 1
+            if added:
+                # Keep max 50 grievances
+                if len(self._grievances) > 50:
+                    self._grievances = self._grievances[-50:]
+                _write_json(self._dir / self._GRIEVANCES_FILE, self._grievances)
+                print(f"[LEARN] Extracted {added} grievances (total: {len(self._grievances)})")
+        except Exception as exc:
+            print(f"[LEARN] _distill_grievances error: {exc}")
+
+    def get_random_grievance(self) -> dict | None:
+        """Return a random unresolved grievance (referenced < 3 times), or None."""
+        import random
+        eligible = [g for g in self._grievances if g.get("times_referenced", 0) < 3]
+        if not eligible:
+            return None
+        chosen = random.choice(eligible)
+        chosen["times_referenced"] = chosen.get("times_referenced", 0) + 1
+        try:
+            _write_json(self._dir / self._GRIEVANCES_FILE, self._grievances)
+        except Exception:
+            pass
+        return chosen
+
+    # ------------------------------------------------------------------
+    # Feature 2 — Alarm history tracking
+    # ------------------------------------------------------------------
+
+    def log_alarm_result(self, name: str, acknowledged: bool):
+        """Log whether an alarm was acknowledged or ignored."""
+        try:
+            key = name.strip().lower()
+            if not key:
+                return
+            entry = self._alarm_history.setdefault(key, {
+                "set_count": 0, "completed_count": 0, "ignored_count": 0,
+            })
+            if acknowledged:
+                entry["completed_count"] = entry.get("completed_count", 0) + 1
+            else:
+                entry["ignored_count"] = entry.get("ignored_count", 0) + 1
+            _write_json(self._dir / self._ALARM_FILE, self._alarm_history)
+        except Exception as exc:
+            print(f"[LEARN] log_alarm_result error: {exc}")
+
+    def log_alarm_set(self, name: str):
+        """Log that an alarm was set."""
+        try:
+            key = name.strip().lower()
+            if not key:
+                return
+            entry = self._alarm_history.setdefault(key, {
+                "set_count": 0, "completed_count": 0, "ignored_count": 0,
+            })
+            entry["set_count"] = entry.get("set_count", 0) + 1
+            _write_json(self._dir / self._ALARM_FILE, self._alarm_history)
+        except Exception as exc:
+            print(f"[LEARN] log_alarm_set error: {exc}")
+
+    def get_alarm_ignore_count(self, name: str) -> int:
+        """Return how many times alarms matching this name have been ignored."""
+        GYM_KEYWORDS = {'gym', 'workout', 'exercise', 'palestra', 'run', 'jog'}
+        name_lower = name.strip().lower()
+        total_ignored = 0
+        for key, entry in self._alarm_history.items():
+            # Check if the alarm name matches gym keywords
+            key_words = set(key.split())
+            name_words = set(name_lower.split())
+            if key_words & GYM_KEYWORDS or name_words & GYM_KEYWORDS:
+                if key_words & GYM_KEYWORDS and name_words & GYM_KEYWORDS:
+                    total_ignored += entry.get("ignored_count", 0)
+            elif key == name_lower:
+                total_ignored += entry.get("ignored_count", 0)
+        return total_ignored
+
+    def check_alarm_sarcasm_today(self, name: str) -> bool:
+        """Return True if sarcasm has NOT been fired for this alarm name today."""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        key = name.strip().lower()
+        return self._alarm_sarcasm_today.get(key) != today
+
+    def mark_alarm_sarcasm_fired(self, name: str):
+        """Mark that sarcasm fired for this alarm name today."""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        self._alarm_sarcasm_today[name.strip().lower()] = today
+
+    # ------------------------------------------------------------------
+    # Feature 3 — Follow-up extraction
+    # ------------------------------------------------------------------
+
+    def _distill_followups(self, conversation_history: list):
+        """Extract situations needing follow-up. Runs in background."""
+        try:
+            if not self._groq_keys:
+                return
+            recent = conversation_history[-20:]
+            if len(recent) < 2:
+                return
+            convo_text = "\n".join(
+                f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
+                for m in recent
+            )
+            response = self._call_groq(
+                system_prompt=(
+                    "From this conversation, identify any situations the user "
+                    "mentioned that have a natural follow-up in 1-3 days. "
+                    "Things like: problems they are dealing with, events coming up, "
+                    "conflicts they mentioned, things they were waiting for. "
+                    'Return JSON array: [{"topic": "...", "followup_question": "...", '
+                    '"followup_after_hours": N}]. Max 3 items. Return [] if none. '
+                    "Return ONLY the JSON array."
+                ),
+                user_prompt=convo_text,
+                temperature=0.2,
+            )
+            new_followups = self._parse_json_response(response, list)
+            if not new_followups:
+                return
+            now_ts = time.time()
+            pending = _read_json(self._dir / self._FOLLOWUPS_FILE, [])
+            added = 0
+            for item in new_followups:
+                if not isinstance(item, dict):
+                    continue
+                topic = item.get("topic", "")
+                question = item.get("followup_question", "")
+                hours = item.get("followup_after_hours", 48)
+                if not topic or not question:
+                    continue
+                # Don't duplicate topics
+                if any(p.get("topic", "").lower() == topic.lower() for p in pending):
+                    continue
+                pending.append({
+                    "topic": topic,
+                    "followup_question": question,
+                    "followup_after_hours": hours,
+                    "created_time": now_ts,
+                    "used": False,
+                })
+                added += 1
+            # Keep max 20 entries (10 active + 10 used)
+            active = [p for p in pending if not p.get("used")]
+            used = [p for p in pending if p.get("used")]
+            if len(active) > 10:
+                active = active[-10:]
+            pending = active + used[-10:]
+            _write_json(self._dir / self._FOLLOWUPS_FILE, pending)
+            if added:
+                print(f"[LEARN] Extracted {added} follow-ups")
+        except Exception as exc:
+            print(f"[LEARN] _distill_followups error: {exc}")
+
+    def get_pending_followup(self) -> dict | None:
+        """Return a follow-up whose time has come, or None."""
+        if self._followup_fired_this_session:
+            return None
+        try:
+            pending = _read_json(self._dir / self._FOLLOWUPS_FILE, [])
+            now_ts = time.time()
+            for item in pending:
+                if item.get("used"):
+                    continue
+                created = item.get("created_time", 0)
+                hours = item.get("followup_after_hours", 48)
+                if now_ts >= created + hours * 3600:
+                    return item
+        except Exception:
+            pass
+        return None
+
+    def mark_followup_used(self, topic: str):
+        """Mark a follow-up as used so it won't fire again."""
+        self._followup_fired_this_session = True
+        try:
+            pending = _read_json(self._dir / self._FOLLOWUPS_FILE, [])
+            for item in pending:
+                if item.get("topic", "").lower() == topic.lower():
+                    item["used"] = True
+            _write_json(self._dir / self._FOLLOWUPS_FILE, pending)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Helpers

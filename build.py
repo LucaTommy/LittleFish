@@ -14,6 +14,7 @@ Usage:
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -82,6 +83,26 @@ def build_fish():
         "--collect-all", "edge_tts",
         "--hidden-import", "aiohttp",
         "--hidden-import", "certifi",
+        "--hidden-import", "google.auth",
+        "--hidden-import", "google.auth.transport.requests",
+        "--hidden-import", "google.oauth2.credentials",
+        "--hidden-import", "google_auth_oauthlib.flow",
+        "--hidden-import", "googleapiclient.discovery",
+        "--hidden-import", "googleapiclient._helpers",
+        "--hidden-import", "googleapiclient.errors",
+        "--hidden-import", "googleapiclient.http",
+        "--hidden-import", "googleapiclient.model",
+        "--hidden-import", "googleapiclient.schema",
+        "--hidden-import", "google_auth_httplib2",
+        "--hidden-import", "httplib2",
+        "--collect-all", "google.auth",
+        "--collect-all", "google_auth_oauthlib",
+        "--collect-all", "googleapiclient",
+        "--hidden-import", "requests",
+        "--hidden-import", "bs4",
+        "--collect-all", "bs4",
+        "--hidden-import", "docx",
+        "--collect-all", "docx",
         str(ROOT / "main.py"),
     ]
     print("Building Little Fish...")
@@ -230,6 +251,18 @@ def main():
         build_release_zip()
     if target == "publish":
         publish()
+
+    # Auto-copy to installed location if it exists
+    install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Little Fish"
+    if install_dir.exists():
+        for name in ("LittleFish.exe", "LittleFishLauncher.exe"):
+            src = DIST / name
+            if src.exists():
+                shutil.copy2(src, install_dir / name)
+        ver = ROOT / "version.json"
+        if ver.exists():
+            shutil.copy2(ver, install_dir / "version.json")
+        print(f"\n→ Copied to install dir: {install_dir}")
 
     if target == "all":
         print("\nBoth executables are in dist/")
