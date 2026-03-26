@@ -2987,15 +2987,15 @@ class FishWidget(QWidget):
         elif month == 10 and random.random() < 0.35:
             self.animator.spawn_particle("leaf")
 
-        # Weather-based particles (rain, lightning)
+        # Weather-based particles (rain, lightning) — subtle ambiance
         weather = self.emotions.weather
         if weather:
             wl = weather.lower()
             if 'rain' in wl or 'drizzle' in wl or 'shower' in wl:
-                for _ in range(random.randint(2, 5)):
+                if random.random() < 0.15:  # ~10% of ticks → occasional drops
                     self.animator.spawn_particle("rain")
             if 'thunder' in wl or 'storm' in wl:
-                if random.random() < 0.25:
+                if random.random() < 0.08:
                     self.animator.spawn_particle("lightning")
 
         # Sleep bubble when sleepy
